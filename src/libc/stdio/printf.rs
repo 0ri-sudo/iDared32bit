@@ -783,7 +783,10 @@ fn sscanf_common(
 ) -> i32 {
     sscanf_common_generic(
         env,
-        |env, s, idx| Ok(env.mem.read(s + idx)),
+        |env, s, idx| match env.mem.read(s + idx) {
+            b'\0' => Err(()),
+            c => Ok(c),
+        },
         |_, _, _| (),
         src.cast_mut(),
         format,
@@ -837,20 +840,28 @@ where
             break;
         }
         if c != b'%' {
-            let mut cc: u8 = getc_fn(env, subject, src_char_idx).unwrap().into(); // TODO: EOF
+            let mut cc: u8 = match getc_fn(env, subject, src_char_idx) {
+                Ok(c) => c.into(),
+                Err(_) => break 'outer,
+            };
             if isspace(env, format + format_char_idx - 1) {
                 // "any single whitespace character in the format string
                 // consumes all available consecutive whitespace characters
                 // from the input"
                 while isspace_inner(cc) {
                     src_char_idx += 1;
-                    cc = getc_fn(env, subject, src_char_idx).unwrap().into(); // TODO: EOF
+                    cc = match getc_fn(env, subject, src_char_idx) {
+                        Ok(c) => c.into(),
+                        Err(_) => break 'outer,
+                    };
                 }
                 // backtrack one
                 ungetc_fn(env, subject, cc);
                 continue;
             }
             if c != cc {
+                // matching failure, backtrack one
+                ungetc_fn(env, subject, cc);
                 return matched_args;
             }
             src_char_idx += 1;
@@ -897,18 +908,16 @@ where
 
         if !b"[cn".contains(&specifier) {
             // skip whitespaces
-            let x = getc_fn(env, subject, src_char_idx);
-            if x.is_err() {
-                break 'outer;
-            }
-            let mut cc: u8 = x.unwrap().into();
+            let mut cc: u8 = match getc_fn(env, subject, src_char_idx) {
+                Ok(c) => c.into(),
+                Err(_) => break 'outer,
+            };
             while isspace_inner(cc) {
                 src_char_idx += 1;
-                let x = getc_fn(env, subject, src_char_idx);
-                if x.is_err() {
-                    break 'outer;
-                }
-                cc = x.unwrap().into();
+                cc = match getc_fn(env, subject, src_char_idx) {
+                    Ok(c) => c.into(),
+                    Err(_) => break 'outer,
+                };
             }
             // backtrack one
             ungetc_fn(env, subject, cc);
@@ -958,8 +967,9 @@ where
                             }
                             _ => unimplemented!("length_modifier {:?}", length_modifier),
                         }
+                        matched_args += 1;
                     }
-                    Err(_) => break,
+                    Err(_) => break 'outer,
                 }
             }
             b'f' | b'g' => {
@@ -970,7 +980,7 @@ where
                         src_char_idx += len;
                         val
                     }
-                    Err(_) => break,
+                    Err(_) => break 'outer,
                 };
                 match length_modifier {
                     None => {
@@ -985,6 +995,7 @@ where
                         unimplemented!("Length formater '{}' for f", modifier)
                     }
                 }
+                matched_args += 1;
             }
             b'x' | b'X' | b'u' => {
                 let base: u32 = match specifier {
@@ -1031,8 +1042,9 @@ where
                             }
                             _ => unimplemented!("length_modifier {:?}", length_modifier),
                         }
+                        matched_args += 1;
                     }
-                    Err(_) => break,
+                    Err(_) => break 'outer,
                 }
             }
             b'[' => {
@@ -1069,7 +1081,10 @@ where
                 let mut matched = false;
                 // Consume `src` while chars are in the set
                 // (or not in the set if inverted)
-                let mut cc = getc_fn(env, subject, src_char_idx).unwrap().into(); // TODO: EOF
+                let mut cc: u8 = match getc_fn(env, subject, src_char_idx) {
+                    Ok(c) => c.into(),
+                    Err(_) => break 'outer,
+                };
                 src_char_idx += 1;
                 let mut match_count = 0;
                 while set.contains(&cc) ^ inverted && cc != b'\0' {
@@ -1080,7 +1095,10 @@ where
                     if max_width > 0 && match_count == max_width {
                         break;
                     }
-                    cc = getc_fn(env, subject, src_char_idx).unwrap().into(); // TODO: EOF
+                    cc = match getc_fn(env, subject, src_char_idx) {
+                        Ok(c) => c.into(),
+                        Err(_) => break,
+                    };
                     src_char_idx += 1;
                 }
                 if !(set.contains(&cc) ^ inverted && cc != b'\0') {
@@ -1090,8 +1108,9 @@ where
                 }
                 if matched {
                     env.mem.write(dst_ptr, b'\0');
+                    matched_args += 1;
                 } else {
-                    matched_args -= 1;
+                    break 'outer;
                 }
             }
             b's' => {
@@ -1099,12 +1118,12 @@ where
                 let orig_dst_ptr: MutPtr<u8> = args.next(env);
                 let mut dst_ptr: MutPtr<u8> = orig_dst_ptr;
                 let mut written = 0;
+                let mut matched = false;
                 loop {
-                    let x = getc_fn(env, subject, src_char_idx);
-                    if x.is_err() {
-                        break;
-                    }
-                    let cc: u8 = x.unwrap().into();
+                    let cc: u8 = match getc_fn(env, subject, src_char_idx) {
+                        Ok(c) => c.into(),
+                        Err(_) => break,
+                    };
                     if !isspace_inner(cc) {
                         if cc == b'\0' {
                             break;
@@ -1113,6 +1132,7 @@ where
                             ungetc_fn(env, subject, cc);
                             break;
                         }
+                        matched = true;
                         env.mem.write(dst_ptr, cc);
                         src_char_idx += 1;
                         dst_ptr += 1;
@@ -1122,7 +1142,11 @@ where
                         break;
                     }
                 }
+                if !matched {
+                    break 'outer;
+                }
                 env.mem.write(dst_ptr, b'\0');
+                matched_args += 1;
                 log_dbg!(
                     "sscanf_common_generic read %s '{:?}'",
                     env.mem.cstr_at_utf8(orig_dst_ptr)
@@ -1131,10 +1155,16 @@ where
             // TODO: more specifiers
             _ => unimplemented!("Format character '{}'", specifier as char),
         }
-
-        matched_args += 1;
     }
 
+    if matched_args == 0 {
+        if let Ok(cc) = getc_fn(env, subject, src_char_idx) {
+            // nothing matched, backtrack one
+            ungetc_fn(env, subject, cc.into());
+        } else {
+            return EOF;
+        }
+    }
     matched_args
 }
 
