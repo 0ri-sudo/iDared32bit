@@ -246,8 +246,12 @@ fn handle_touches_down(env: &mut Environment, map: HashMap<FingerId, Coords>) {
             continue;
         } else {
             log_dbg!(
-                "Found view {:?} with frame {:?} for touch at {:?} in window {:?}",
+                "Found view {:?} ({}) with frame {:?} for touch at {:?} in window {:?}",
                 view,
+                {
+                    let class: crate::objc::Class = msg![env; view class];
+                    env.objc.get_class_name(class).to_owned()
+                },
                 {
                     let f: CGRect = msg![env; view frame];
                     f
