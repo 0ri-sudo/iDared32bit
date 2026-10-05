@@ -34,6 +34,28 @@ pub enum AudioFormat {
         is_little_endian: bool,
     },
 }
+/// A compressed format that [AudioFile] decodes to PCM when opening a file.
+///
+/// Apps still see the file as compressed, as on a real device: its packets
+/// are variable-size, each holding [Self::frames_per_packet] frames. Unlike on
+/// a real device though, the packets' contents are the decoded 16-bit PCM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompressedFormat {
+    Aac,
+    Mp3,
+    Alac,
+}
+
+impl CompressedFormat {
+    pub fn frames_per_packet(self) -> u32 {
+        match self {
+            CompressedFormat::Aac => 1024,
+            CompressedFormat::Mp3 => 1152,
+            CompressedFormat::Alac => 4096,
+        }
+    }
+}
+
 /// Fields have the same meanings as in the Core Audio Format's
 /// Audio Description chunk, which is in turn similar to Core Audio Types'
 /// `AudioStreamBasicDescription`.
@@ -76,6 +98,7 @@ fn wav_to_pcm16<R: std::io::Read>(
         bytes: samples.iter().flat_map(|s| s.to_le_bytes()).collect(),
         sample_rate: spec.sample_rate,
         channels: spec.channels.into(),
+        compressed_format: None,
     })
 }
 
@@ -170,6 +193,59 @@ impl AudioFile {
                 bits_per_channel: 16,
             },
         }
+    }
+
+    /// The compressed format the file was decoded from, if any.
+    pub fn compressed_format(&self) -> Option<CompressedFormat> {
+        match self.0 {
+            AudioFileInner::Wave(_) => None,
+            AudioFileInner::Symphonia(ref pcm) => pcm.compressed_format,
+        }
+    }
+
+    /// For a file decoded from a compressed format: the size of a packet as
+    /// apps see it (see [CompressedFormat]). The last packet may be shorter.
+    pub fn compressed_packet_size(&self) -> Option<u32> {
+        let format = self.compressed_format()?;
+        let AudioDescription {
+            bytes_per_packet, ..
+        } = self.audio_description();
+        Some(format.frames_per_packet() * bytes_per_packet)
+    }
+
+    /// For a file decoded from a compressed format: the number of packets as
+    /// apps see them (see [CompressedFormat]).
+    pub fn compressed_packet_count(&self) -> Option<u64> {
+        let packet_size = u64::from(self.compressed_packet_size()?);
+        Some(self.byte_count().div_ceil(packet_size))
+    }
+
+    /// For a file decoded from a compressed format: the byte offsets and sizes
+    /// of up to `max_packets` packets from `start_packet`, stopping before the
+    /// total size would exceed `max_bytes`, if given.
+    pub fn compressed_packets(
+        &self,
+        start_packet: u64,
+        max_packets: u32,
+        max_bytes: Option<u32>,
+    ) -> Vec<(u64, u32)> {
+        let packet_size = self.compressed_packet_size().unwrap();
+        let byte_count = self.byte_count();
+        let mut packets = Vec::new();
+        let mut total: u32 = 0;
+        for i in 0..u64::from(max_packets) {
+            let offset = (start_packet + i) * u64::from(packet_size);
+            if offset >= byte_count {
+                break;
+            }
+            let size = u64::from(packet_size).min(byte_count - offset) as u32;
+            if max_bytes.is_some_and(|max_bytes| total + size > max_bytes) {
+                break;
+            }
+            packets.push((offset, size));
+            total += size;
+        }
+        packets
     }
 
     fn bytes_per_sample(&self) -> u64 {
@@ -294,6 +370,25 @@ impl AudioFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compressed_packets() {
+        // 2.5 AAC packets of 16-bit stereo
+        let file = AudioFile(AudioFileInner::Symphonia(
+            symphonia_formats::SymphoniaDecodedToPcm {
+                bytes: vec![0; 2560 * 4],
+                sample_rate: 44100,
+                channels: 2,
+                compressed_format: Some(CompressedFormat::Aac),
+            },
+        ));
+        assert_eq!(file.compressed_packet_count(), Some(3));
+        assert_eq!(
+            file.compressed_packets(0, 10, None),
+            vec![(0, 4096), (4096, 4096), (8192, 2048)]
+        );
+        assert_eq!(file.compressed_packets(0, 10, Some(8191)), vec![(0, 4096)]);
+    }
 
     #[test]
     fn wav_24_bit_is_read_as_16_bit() {

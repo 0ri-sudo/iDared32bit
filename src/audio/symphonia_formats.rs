@@ -17,6 +17,8 @@ use symphonia::core::codecs::audio::well_known::{
 };
 use symphonia::core::io::MediaSourceStream;
 
+use super::CompressedFormat;
+
 /// PCM data decoded from an miscellaneous format file.
 pub struct SymphoniaDecodedToPcm {
     /// 16-bit little-endian PCM samples, grouped in frames (one sample per
@@ -26,6 +28,8 @@ pub struct SymphoniaDecodedToPcm {
     pub sample_rate: u32,
     /// Channel count.
     pub channels: u32,
+    /// The compressed format it was decoded from, if any.
+    pub compressed_format: Option<CompressedFormat>,
 }
 
 pub fn decode_symphonia_to_pcm(file: Cursor<Vec<u8>>) -> Result<SymphoniaDecodedToPcm, ()> {
@@ -65,6 +69,12 @@ pub fn decode_symphonia_to_pcm(file: Cursor<Vec<u8>>) -> Result<SymphoniaDecoded
 
     // Not sure why this would fail, maybe an unusual AAC track.
     let audio_codec_params = track.codec_params.as_ref().unwrap().audio().unwrap();
+    let compressed_format = match audio_codec_params.codec {
+        CODEC_ID_AAC => Some(CompressedFormat::Aac),
+        CODEC_ID_MP3 => Some(CompressedFormat::Mp3),
+        CODEC_ID_ALAC => Some(CompressedFormat::Alac),
+        _ => None,
+    };
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(audio_codec_params, &Default::default())
         .map_err(|_| ())?;
@@ -117,5 +127,6 @@ pub fn decode_symphonia_to_pcm(file: Cursor<Vec<u8>>) -> Result<SymphoniaDecoded
         bytes: out_pcm,
         sample_rate: audio_spec.rate(),
         channels: audio_spec.channels().count().try_into().unwrap(),
+        compressed_format,
     })
 }

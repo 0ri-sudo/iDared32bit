@@ -9,7 +9,10 @@ use crate::abi::{CallFromHost, GuestFunction};
 use crate::audio; // Keep this module namespaced to avoid confusion
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::frameworks::carbon_core::{eofErr, OSStatus};
-use crate::frameworks::core_audio_types::{debug_fourcc, fourcc, AudioStreamBasicDescription};
+use crate::frameworks::core_audio_types::{
+    debug_fourcc, fourcc, kAudioFormatAppleLossless, kAudioFormatMPEG4AAC, kAudioFormatMPEGLayer3,
+    AudioStreamBasicDescription,
+};
 use crate::frameworks::core_foundation::cf_url::CFURLRef;
 use crate::frameworks::foundation::ns_url::to_rust_path;
 use crate::mem::{guest_size_of, GuestUSize, MutPtr, MutVoidPtr, SafeRead};
@@ -304,9 +307,21 @@ pub fn AudioFileGetProperty(
             }
         }
         kAudioFilePropertyDataFormat => {
-            let desc = AudioStreamBasicDescription::from_audio_description(
+            let mut desc = AudioStreamBasicDescription::from_audio_description(
                 host_object.audio_file.audio_description(),
             );
+            if let Some(format) = host_object.audio_file.compressed_format() {
+                desc.format_id = match format {
+                    audio::CompressedFormat::Aac => kAudioFormatMPEG4AAC,
+                    audio::CompressedFormat::Mp3 => kAudioFormatMPEGLayer3,
+                    audio::CompressedFormat::Alac => kAudioFormatAppleLossless,
+                };
+                desc.format_flags = 0;
+                desc.bytes_per_packet = 0;
+                desc.frames_per_packet = format.frames_per_packet();
+                desc.bytes_per_frame = 0;
+                desc.bits_per_channel = 0;
+            }
             env.mem.write(out_property_data.cast(), desc);
         }
         kAudioFilePropertyAudioDataByteCount => {
@@ -314,11 +329,17 @@ pub fn AudioFileGetProperty(
             env.mem.write(out_property_data.cast(), byte_count);
         }
         kAudioFilePropertyAudioDataPacketCount => {
-            let packet_count: u64 = host_object.audio_file.packet_count();
+            let packet_count: u64 = host_object
+                .audio_file
+                .compressed_packet_count()
+                .unwrap_or_else(|| host_object.audio_file.packet_count());
             env.mem.write(out_property_data.cast(), packet_count);
         }
         kAudioFilePropertyPacketSizeUpperBound => {
-            let packet_size_upper_bound: u32 = host_object.audio_file.packet_size_upper_bound();
+            let packet_size_upper_bound: u32 = host_object
+                .audio_file
+                .compressed_packet_size()
+                .unwrap_or_else(|| host_object.audio_file.packet_size_upper_bound());
             env.mem
                 .write(out_property_data.cast(), packet_size_upper_bound);
         }
@@ -367,22 +388,101 @@ pub fn AudioFileReadBytes(
     }
 }
 
-fn AudioFileReadPacketData(
+#[repr(C, packed)]
+struct AudioStreamPacketDescription {
+    start_offset: i64,
+    variable_frames_in_packet: u32,
+    data_byte_size: u32,
+}
+unsafe impl SafeRead for AudioStreamPacketDescription {}
+
+/// Read packets of a file decoded from a compressed format (see
+/// [audio::CompressedFormat]), which apps see as variable-size.
+fn read_compressed_packets(
     env: &mut Environment,
     in_audio_file: AudioFileID,
-    in_use_cache: bool,
-    out_num_bytes: MutPtr<u32>,
-    out_packet_descriptions: MutVoidPtr, // unimplemented
+    io_num_bytes: MutPtr<u32>,
+    max_bytes: Option<u32>,
+    out_packet_descriptions: MutVoidPtr,
     in_starting_packet: i64,
     io_num_packets: MutPtr<u32>,
     out_buffer: MutVoidPtr,
 ) -> OSStatus {
-    // TODO: real VBR support
+    let host_object = State::get(&mut env.framework_state)
+        .audio_files
+        .get_mut(&in_audio_file)
+        .unwrap();
+    let packets = host_object.audio_file.compressed_packets(
+        in_starting_packet.try_into().unwrap(),
+        env.mem.read(io_num_packets),
+        max_bytes,
+    );
+    let total: u32 = packets.iter().map(|&(_, size)| size).sum();
+    if let Some(&(first_offset, _)) = packets.first() {
+        let buffer = env.mem.bytes_at_mut(out_buffer.cast(), total);
+        host_object
+            .audio_file
+            .read_bytes(first_offset, buffer)
+            .unwrap();
+    }
+
+    let descriptions: MutPtr<AudioStreamPacketDescription> = out_packet_descriptions.cast();
+    let mut start_offset = 0;
+    for (i, &(_, size)) in packets.iter().enumerate() {
+        if !descriptions.is_null() {
+            env.mem.write(
+                descriptions + i.try_into().unwrap(),
+                AudioStreamPacketDescription {
+                    start_offset,
+                    variable_frames_in_packet: 0,
+                    data_byte_size: size,
+                },
+            );
+        }
+        start_offset += i64::from(size);
+    }
+    env.mem.write(io_num_bytes, total);
+    env.mem
+        .write(io_num_packets, packets.len().try_into().unwrap());
+    0 // success
+}
+
+fn AudioFileReadPacketData(
+    env: &mut Environment,
+    in_audio_file: AudioFileID,
+    in_use_cache: bool,
+    io_num_bytes: MutPtr<u32>,
+    out_packet_descriptions: MutVoidPtr,
+    in_starting_packet: i64,
+    io_num_packets: MutPtr<u32>,
+    out_buffer: MutVoidPtr,
+) -> OSStatus {
+    return_if_null!(in_audio_file);
+
+    let host_object = State::get(&mut env.framework_state)
+        .audio_files
+        .get_mut(&in_audio_file)
+        .unwrap();
+    if host_object.audio_file.compressed_format().is_some() {
+        // The buffer's size is passed in.
+        let max_bytes = env.mem.read(io_num_bytes);
+        return read_compressed_packets(
+            env,
+            in_audio_file,
+            io_num_bytes,
+            Some(max_bytes),
+            out_packet_descriptions,
+            in_starting_packet,
+            io_num_packets,
+            out_buffer,
+        );
+    }
+
     AudioFileReadPackets(
         env,
         in_audio_file,
         in_use_cache,
-        out_num_bytes,
+        io_num_bytes,
         out_packet_descriptions,
         in_starting_packet,
         io_num_packets,
@@ -395,15 +495,31 @@ pub fn AudioFileReadPackets(
     in_audio_file: AudioFileID,
     in_use_cache: bool,
     out_num_bytes: MutPtr<u32>,
-    out_packet_descriptions: MutVoidPtr, // unimplemented
+    out_packet_descriptions: MutVoidPtr,
     in_starting_packet: i64,
     io_num_packets: MutPtr<u32>,
     out_buffer: MutVoidPtr,
 ) -> OSStatus {
     return_if_null!(in_audio_file);
 
-    // Variable-size packets are not implemented currently. When they are,
-    // this parameter should be a `MutPtr<AudioStreamPacketDescription>`.
+    let host_object = State::get(&mut env.framework_state)
+        .audio_files
+        .get_mut(&in_audio_file)
+        .unwrap();
+    if host_object.audio_file.compressed_format().is_some() {
+        return read_compressed_packets(
+            env,
+            in_audio_file,
+            out_num_bytes,
+            None,
+            out_packet_descriptions,
+            in_starting_packet,
+            io_num_packets,
+            out_buffer,
+        );
+    }
+
+    // Packet descriptions are only needed for variable-size packets.
     if !out_packet_descriptions.is_null() {
         log!("Warning: ignoring non-null out_packet_descriptions in AudioFileReadPackets()");
     }

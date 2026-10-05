@@ -16,9 +16,10 @@ use crate::audio::openal::{OpenAL, OpenALManager};
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::frameworks::carbon_core::OSStatus;
 use crate::frameworks::core_audio_types::{
-    debug_fourcc, fourcc, kAudioFormatAppleIMA4, kAudioFormatFlagIsBigEndian,
-    kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatFlagIsSignedInteger,
-    kAudioFormatLinearPCM, AudioStreamBasicDescription, AudioTimeStamp,
+    debug_fourcc, fourcc, kAudioFormatAppleIMA4, kAudioFormatAppleLossless,
+    kAudioFormatFlagIsBigEndian, kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked,
+    kAudioFormatFlagIsSignedInteger, kAudioFormatLinearPCM, kAudioFormatMPEG4AAC,
+    kAudioFormatMPEGLayer3, AudioStreamBasicDescription, AudioTimeStamp,
 };
 use crate::frameworks::core_foundation::cf_run_loop::{
     kCFRunLoopCommonModes, CFRunLoopGetMain, CFRunLoopMode, CFRunLoopRef,
@@ -534,6 +535,11 @@ pub fn is_supported_audio_format(format: &AudioStreamBasicDescription) -> bool {
     } = format;
     match format_id {
         kAudioFormatAppleIMA4 => (channels_per_frame == 1) || (channels_per_frame == 2),
+        // Only from files touchHLE has already decoded (see
+        // crate::audio::CompressedFormat).
+        kAudioFormatMPEG4AAC | kAudioFormatMPEGLayer3 | kAudioFormatAppleLossless => {
+            (channels_per_frame == 1) || (channels_per_frame == 2)
+        }
         kAudioFormatLinearPCM => {
             // TODO: support more PCM formats
             (channels_per_frame == 1 || channels_per_frame == 2)
@@ -594,6 +600,21 @@ pub fn decode_buffer(
                     out_pcm,
                 )
             }
+        }
+        kAudioFormatMPEG4AAC | kAudioFormatMPEGLayer3 | kAudioFormatAppleLossless => {
+            // The packets hold 16-bit PCM (see crate::audio::CompressedFormat).
+            let frame_size = format.channels_per_frame as usize * 2;
+            let data_slice = &data_slice[..data_slice.len() - data_slice.len() % frame_size];
+            let al_format = if format.channels_per_frame == 1 {
+                al::AL_FORMAT_MONO16
+            } else {
+                al::AL_FORMAT_STEREO16
+            };
+            (
+                al_format,
+                format.sample_rate as ALsizei,
+                data_slice.to_owned(),
+            )
         }
         kAudioFormatLinearPCM => {
             // The end of the data might be misaligned (this happens in Crash

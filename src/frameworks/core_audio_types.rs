@@ -164,6 +164,9 @@ unsafe impl SafeRead for AudioTimeStamp {}
 pub type AudioFormatID = u32;
 pub const kAudioFormatLinearPCM: AudioFormatID = fourcc(b"lpcm");
 pub const kAudioFormatAppleIMA4: AudioFormatID = fourcc(b"ima4");
+pub const kAudioFormatMPEG4AAC: AudioFormatID = fourcc(b"aac ");
+pub const kAudioFormatMPEGLayer3: AudioFormatID = fourcc(b".mp3");
+pub const kAudioFormatAppleLossless: AudioFormatID = fourcc(b"alac");
 
 pub type AudioFormatFlags = u32;
 pub const kAudioFormatFlagIsFloat: AudioFormatFlags = 1 << 0;
