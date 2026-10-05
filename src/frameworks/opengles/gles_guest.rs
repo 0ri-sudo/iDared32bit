@@ -1344,6 +1344,20 @@ fn glDeleteRenderbuffersOES(env: &mut Environment, n: GLsizei, renderbuffers: Co
         unsafe { gles.DeleteRenderbuffersOES(n, renderbuffers) }
     })
 }
+fn glDiscardFramebufferEXT(
+    _env: &mut Environment,
+    target: GLenum,
+    num_attachments: GLsizei,
+    _attachments: ConstPtr<GLenum>,
+) {
+    // Only a hint that the contents are no longer needed, which an
+    // implementation is allowed to ignore.
+    log_dbg!(
+        "glDiscardFramebufferEXT({:#x}, {})",
+        target,
+        num_attachments
+    );
+}
 fn glGenerateMipmapOES(env: &mut Environment, target: GLenum) {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.GenerateMipmapOES(target) })
 }
@@ -1630,6 +1644,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(glCheckFramebufferStatusOES(_)),
     export_c_func!(glDeleteFramebuffersOES(_, _)),
     export_c_func!(glDeleteRenderbuffersOES(_, _)),
+    export_c_func!(glDiscardFramebufferEXT(_, _, _)),
     export_c_func!(glGenerateMipmapOES(_)),
     export_c_func!(glGetBufferParameteriv(_, _, _)),
     export_c_func!(glMapBufferOES(_, _)),
