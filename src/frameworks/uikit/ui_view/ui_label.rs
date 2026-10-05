@@ -99,6 +99,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     () = msg![env; this setBackgroundColor:nil];
     // Built-in views don't have user-controlled opaqueness.
     () = msg_super![env; this setOpaque:false];
+    // Unlike UIView, touches go through by default.
+    () = msg![env; this setUserInteractionEnabled:false];
     this
 }
 

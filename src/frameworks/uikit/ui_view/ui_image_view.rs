@@ -38,6 +38,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     // Not sure if UIImageView does this unconditionally, or only for images
     // with alpha channels.
     () = msg![env; this setOpaque:false];
+    // Unlike UIView, touches go through by default.
+    () = msg![env; this setUserInteractionEnabled:false];
     this
 }
 
@@ -73,6 +75,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     // Not sure if UIImageView does this unconditionally, or only for images
     // with alpha channels.
     () = msg![env; this setOpaque:false];
+    // Unlike UIView, touches go through by default.
+    () = msg![env; this setUserInteractionEnabled:false];
     this
 }
 
