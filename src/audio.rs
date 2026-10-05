@@ -54,6 +54,31 @@ enum AudioFileInner {
     Symphonia(symphonia_formats::SymphoniaDecodedToPcm),
 }
 
+fn wav_to_pcm16<R: std::io::Read>(
+    reader: hound::WavReader<R>,
+) -> Result<symphonia_formats::SymphoniaDecodedToPcm, AudioFileOpenError> {
+    let spec = reader.spec();
+    let samples: Result<Vec<i16>, _> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .map(|s| s.map(|s| (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16))
+            .collect(),
+        hound::SampleFormat::Int => {
+            let shift = spec.bits_per_sample.saturating_sub(16);
+            reader
+                .into_samples::<i32>()
+                .map(|s| s.map(|s| (s >> shift) as i16))
+                .collect()
+        }
+    };
+    let samples = samples.map_err(|_| AudioFileOpenError::FileDecodeError)?;
+    Ok(symphonia_formats::SymphoniaDecodedToPcm {
+        bytes: samples.iter().flat_map(|s| s.to_le_bytes()).collect(),
+        sample_rate: spec.sample_rate,
+        channels: spec.channels.into(),
+    })
+}
+
 impl AudioFile {
     pub fn open_for_reading<P: AsRef<GuestPath>>(
         path: P,
@@ -82,9 +107,17 @@ impl AudioFile {
         // which is appropriate for the file. This is worked around here by
         // using temporary readers for checking if the file is the supported
         // format, then recreating the reader if that works.
-        if hound::WavReader::new(Cursor::new(&bytes)).is_ok() {
-            let reader = hound::WavReader::new(Cursor::new(bytes)).unwrap();
-            Ok(AudioFile(AudioFileInner::Wave(reader)))
+        if let Ok(reader) = hound::WavReader::new(Cursor::new(&bytes)) {
+            let spec = reader.spec();
+            if spec.sample_format == hound::SampleFormat::Int
+                && matches!(spec.bits_per_sample, 8 | 16)
+            {
+                let reader = hound::WavReader::new(Cursor::new(bytes)).unwrap();
+                Ok(AudioFile(AudioFileInner::Wave(reader)))
+            } else {
+                // Other sample formats are converted to 16-bit up front.
+                Ok(AudioFile(AudioFileInner::Symphonia(wav_to_pcm16(reader)?)))
+            }
         // TODO: Real MP3/MP4/Non-linear PCM container handling. Currently we
         // are immediately decoding the entire file to PCM and acting as if
         // it's a PCM file, simply because because this is easier. Full MP3
@@ -105,10 +138,7 @@ impl AudioFile {
                     bits_per_sample,
                     sample_format,
                 } = wave_reader.spec();
-                // Hound supports unsigned 8-bit, signed 16-bit, signed 24-bit
-                // and floating-point 32-bit linear PCM. We should expose all of
-                // these eventually, but we should only expose formats we've
-                // tested.
+                // Other formats were converted in read_from_vec().
                 assert!(matches!(bits_per_sample, 8 | 16));
                 assert!(sample_format == hound::SampleFormat::Int);
 
@@ -258,5 +288,29 @@ impl AudioFile {
         assert!(bytes_per_packet != 0); // TODO
         self.byte_count() as f64 * frames_per_packet as f64
             / (bytes_per_packet as f64 * sample_rate)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wav_24_bit_is_read_as_16_bit() {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 22050,
+            bits_per_sample: 24,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut bytes = Cursor::new(Vec::new());
+        let mut writer = hound::WavWriter::new(&mut bytes, spec).unwrap();
+        writer.write_sample(0x123456).unwrap();
+        writer.finalize().unwrap();
+
+        let mut file = AudioFile::read_from_vec(bytes.into_inner()).unwrap();
+        let mut sample = [0; 2];
+        assert_eq!(file.read_bytes(0, &mut sample), Ok(2));
+        assert_eq!(i16::from_le_bytes(sample), 0x1234);
     }
 }
