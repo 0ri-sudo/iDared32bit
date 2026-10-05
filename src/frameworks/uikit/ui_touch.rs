@@ -221,6 +221,10 @@ fn handle_touches_down(env: &mut Environment, map: HashMap<FingerId, Coords>) {
         // TODO: this may not be correct once we support windowLevel.
         let windows = env.framework_state.uikit.ui_view.ui_window.windows.clone();
         let Some((window, location_in_window)) = windows.into_iter().rev().find_map(|window| {
+            // Hidden windows don't get touches.
+            if msg![env; window isHidden] {
+                return None;
+            }
             let location_in_window: CGPoint =
                 msg![env; window convertPoint:location fromWindow:nil];
             if msg![env; window pointInside:location_in_window withEvent:event] {
