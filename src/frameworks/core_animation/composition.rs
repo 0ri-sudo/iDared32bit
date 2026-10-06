@@ -664,12 +664,19 @@ unsafe fn composite_layer_recursive(
         gles.EnableClientState(gles11::TEXTURE_COORD_ARRAY);
         gles.BindBuffer(gles11::ARRAY_BUFFER, 0);
 
+        // The part of the image to show (contentsRect), from its top-left.
+        let CGRect { origin, size } = host_obj.contents_rect;
+        let (u0, u1) = (origin.x * u_max, (origin.x + size.width) * u_max);
+        let (top, bottom) = (origin.y, origin.y + size.height);
+
         // Normal images will have top-to-bottom row order, but OpenGL ES
         // expects bottom-to-top, so flip the UVs in that case.
         let tex_coords: [f32; 8] = if host_obj.contents != nil {
-            [0.0, v_max, 0.0, 0.0, u_max, v_max, u_max, 0.0]
+            let (v_top, v_bottom) = (top * v_max, bottom * v_max);
+            [u0, v_bottom, u0, v_top, u1, v_bottom, u1, v_top]
         } else {
-            [0.0, 0.0, 0.0, v_max, u_max, 0.0, u_max, v_max]
+            let (v_top, v_bottom) = ((1.0 - top) * v_max, (1.0 - bottom) * v_max);
+            [u0, v_bottom, u0, v_top, u1, v_bottom, u1, v_top]
         };
 
         gles.TexCoordPointer(2, gles11::FLOAT, 0, tex_coords.as_ptr() as *const GLvoid);

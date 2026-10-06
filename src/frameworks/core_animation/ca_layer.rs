@@ -54,6 +54,8 @@ pub(super) struct CALayerHostObject {
     pub(super) needs_display_on_bounds_change: bool,
     /// `CGImageRef*`
     pub(super) contents: id,
+    /// The part of `contents` to show, in unit co-ordinates.
+    pub(super) contents_rect: CGRect,
     /// For CAEAGLLayer only
     pub(super) drawable_properties: id,
     /// For CAEAGLLayer only (internal state for compositor)
@@ -131,6 +133,10 @@ pub const CLASSES: ClassExports = objc_classes! {
         needs_display: false,
         needs_display_on_bounds_change: false,
         contents: nil,
+        contents_rect: CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize { width: 1.0, height: 1.0 }
+        },
         drawable_properties: nil,
         presented_pixels: None,
         cg_context: None,
@@ -499,6 +505,18 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 // CGImageRef*
+- (id)sublayers {
+    let sublayers = env.objc.borrow::<CALayerHostObject>(this).sublayers.clone();
+    if sublayers.is_empty() {
+        return nil;
+    }
+    for &sublayer in &sublayers {
+        retain(env, sublayer);
+    }
+    let array = crate::frameworks::foundation::ns_array::from_vec(env, sublayers);
+    autorelease(env, array)
+}
+
 - (id)contents {
     env.objc.borrow::<CALayerHostObject>(this).contents
 }
@@ -508,6 +526,14 @@ pub const CLASSES: ClassExports = objc_classes! {
     let old_contents = std::mem::replace(&mut host_obj.contents, new_contents);
     retain(env, new_contents);
     release(env, old_contents);
+}
+
+- (CGRect)contentsRect {
+    env.objc.borrow::<CALayerHostObject>(this).contents_rect
+}
+- (())setContentsRect:(CGRect)rect {
+    // TODO: implicit animation
+    env.objc.borrow_mut::<CALayerHostObject>(this).contents_rect = rect;
 }
 
 - (())setEdgeAntialiasingMask:(u32)mask {
