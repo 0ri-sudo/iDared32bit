@@ -408,6 +408,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     file_attributes_common(env, guest_path)
 }
 
+// Deprecated in iPhone OS 2.0.
+- (id)fileSystemAttributesAtPath:(id)path { // NSString*
+    msg![env; this attributesOfFileSystemForPath:path error:(MutPtr::<id>::null())]
+}
+
 - (id)attributesOfFileSystemForPath:(id)_path
                               error:(MutPtr<id>)error {
     // TODO: other attributes
