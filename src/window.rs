@@ -1756,6 +1756,38 @@ impl Window {
     }
 }
 
+/// Whether touchHLE is running on an iPad.
+pub fn host_is_ipad() -> bool {
+    #[cfg(target_os = "ios")]
+    unsafe {
+        use std::os::raw::{c_char, c_void};
+
+        #[link(name = "objc")]
+        extern "C" {
+            fn objc_getClass(name: *const c_char) -> *mut c_void;
+            fn sel_registerName(name: *const c_char) -> *mut c_void;
+            fn objc_msgSend();
+        }
+
+        type Id = *mut c_void;
+        let send_id: unsafe extern "C" fn(Id, Id) -> Id =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        let send_int: unsafe extern "C" fn(Id, Id) -> isize =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        let device = send_id(
+            objc_getClass(b"UIDevice\0".as_ptr() as *const _),
+            sel_registerName(b"currentDevice\0".as_ptr() as *const _),
+        );
+        // UIUserInterfaceIdiomPad
+        send_int(
+            device,
+            sel_registerName(b"userInterfaceIdiom\0".as_ptr() as *const _),
+        ) == 1
+    }
+    #[cfg(not(target_os = "ios"))]
+    false
+}
+
 #[cfg(target_os = "ios")]
 fn open_url_host_ios(url: &str) -> Result<(), String> {
     use std::ffi::CString;

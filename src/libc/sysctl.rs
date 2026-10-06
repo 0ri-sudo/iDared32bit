@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::libc::errno::{set_errno, ENOENT};
 use crate::mem::{guest_size_of, ConstPtr, GuestUSize, MutPtr, MutVoidPtr, PAGE_SIZE};
+use crate::window::DeviceFamily;
 use crate::Environment;
 
 // Top level constants
@@ -98,6 +99,26 @@ static INT_MAP: LazyLock<HashMap<SysCtlNamePath, (&str, SysInfoType)>> = LazyLoc
     }
     hashmap
 });
+
+/// `hw.machine`: the original iPhone's, or the original iPad's for iPad apps.
+pub fn hw_machine(env: &Environment) -> &'static [u8] {
+    if env.options.device_family == Some(DeviceFamily::iPad) {
+        b"iPad1,1"
+    } else {
+        b"iPhone1,1"
+    }
+}
+
+/// Values that differ for iPad apps, which run as if on the original iPad.
+fn for_device_family(env: &Environment, name: &str, val: SysInfoType) -> SysInfoType {
+    match name {
+        "hw.machine" => SysInfoType::String(hw_machine(env)),
+        "hw.model" if env.options.device_family == Some(DeviceFamily::iPad) => {
+            SysInfoType::String(b"K48AP")
+        }
+        _ => val,
+    }
+}
 
 #[derive(Clone)]
 enum SysInfoType {
@@ -245,6 +266,7 @@ where
     assert_eq!(newlen, 0);
 
     let (name_str, val) = name_lookup(env);
+    let val = for_device_family(env, name_str, val);
     let len: GuestUSize = match val {
         SysInfoType::String(str) => str.len() as GuestUSize + 1,
         SysInfoType::Int32(_) => guest_size_of::<i32>(),

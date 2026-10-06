@@ -381,6 +381,9 @@ impl Environment {
                 if let Some(dfo) = device_family_override {
                     assert!(device_family_array.contains(&dfo));
                     dfo
+                } else if window::host_is_ipad() {
+                    // The iPad version makes better use of the screen.
+                    DeviceFamily::iPad
                 } else {
                     assert!(device_family_array.contains(&DeviceFamily::iPhone));
                     DeviceFamily::iPhone
