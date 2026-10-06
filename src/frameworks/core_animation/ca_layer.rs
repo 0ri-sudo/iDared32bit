@@ -744,6 +744,11 @@ fn is_implicit_animation_enabled(env: &mut Environment, layer: id) -> bool {
     // CALayers have implicit animations enabled by default, but UIKit doesn't
     // unless there's an active UIView animation block, and animations haven't
     // been turned off.
+    if ca_transaction::ThreadLocalState::get_current_transaction(env)
+        .is_some_and(|transaction| transaction.disables_actions())
+    {
+        return false;
+    }
     let delegate = msg![env; layer delegate];
     let uiview_class = env.objc.get_known_class("UIView", &mut env.mem);
     let delegate_is_uiview: bool = msg![env; delegate isKindOfClass:uiview_class];

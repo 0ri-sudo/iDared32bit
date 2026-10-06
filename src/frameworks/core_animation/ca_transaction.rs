@@ -108,6 +108,10 @@ impl Transaction {
         }
     }
 
+    pub fn disables_actions(&self) -> bool {
+        self.disable_actions
+    }
+
     pub fn get_animations(&self) -> Vec<(id, id)> {
         self.animations.clone()
     }
