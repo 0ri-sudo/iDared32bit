@@ -7,6 +7,7 @@
 
 use crate::dyld::{ConstantExports, HostConstant};
 use crate::frameworks::core_animation::ca_transaction;
+use crate::frameworks::core_animation::ca_transform_3d::CATransform3D;
 use crate::frameworks::core_foundation::time::CFTimeInterval;
 use crate::frameworks::core_graphics::cg_affine_transform::{
     CGAffineTransform, CGAffineTransformIdentity,
@@ -278,6 +279,15 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (CGAffineTransform)affineTransform {
     env.objc.borrow::<CALayerHostObject>(this).affine_transform
+}
+- (CATransform3D)transform {
+    env.objc.borrow::<CALayerHostObject>(this).affine_transform.into()
+}
+- (())setTransform:(CATransform3D)transform {
+    if !transform.is_affine() {
+        log_once!("Warning: only the 2D part of 3D layer transforms is supported.");
+    }
+    () = msg![env; this setAffineTransform:(transform.affine_part())];
 }
 - (())setAffineTransform:(CGAffineTransform)affine_transform {
     let host_object = env.objc.borrow_mut::<CALayerHostObject>(this);
