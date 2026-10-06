@@ -67,6 +67,9 @@ impl SEL {
     pub fn is_null(self) -> bool {
         self.0.is_null()
     }
+    pub(super) fn as_ptr(self) -> ConstPtr<u8> {
+        self.0
+    }
 }
 
 unsafe impl SafeRead for SEL {}

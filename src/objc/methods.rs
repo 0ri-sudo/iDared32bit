@@ -142,14 +142,14 @@ pub(super) struct method_list_t {
 }
 unsafe impl SafeRead for method_list_t {}
 
-/// The layout of a method in an app binary.
+/// The layout of a method in an app binary, and of what a `Method` points to.
 ///
 /// The name, field names and field layout are based on what Ghidra outputs.
 #[repr(C, packed)]
-struct method_t {
-    name: ConstPtr<u8>,
-    types: ConstPtr<u8>,
-    imp: GuestIMP,
+pub(super) struct method_t {
+    pub(super) name: ConstPtr<u8>,
+    pub(super) types: ConstPtr<u8>,
+    pub(super) imp: GuestIMP,
 }
 unsafe impl SafeRead for method_t {}
 

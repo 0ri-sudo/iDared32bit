@@ -11,8 +11,8 @@
 //! - [[objc explain]: Classes and metaclasses](http://www.sealiesoftware.com/blog/archive/2009/04/14/objc_explain_Classes_and_metaclasses.html), especially [the PDF diagram](http://www.sealiesoftware.com/blog/class%20diagram.pdf)
 
 use super::{
-    id, ivar_list_t, method_list_t, nil, objc_object, AnyHostObject, HostIMP, HostObject, ObjC,
-    IMP, SEL,
+    id, ivar_list_t, method_list_t, method_t, nil, objc_object, AnyHostObject, HostIMP, HostObject,
+    ObjC, IMP, SEL,
 };
 use crate::libc::string::strdup;
 use crate::mach_o::MachO;
@@ -1093,6 +1093,50 @@ pub(super) fn class_replaceMethod(
         name.as_str(&env.mem)
     );
     existing
+}
+
+pub(super) fn class_getInstanceMethod(
+    env: &mut Environment,
+    cls: Class,
+    name: SEL,
+) -> MutPtr<method_t> {
+    let mut class = cls;
+    let (imp, types) = loop {
+        if class == nil {
+            return Ptr::null();
+        }
+        let host_object: &ClassHostObject = env.objc.borrow(class);
+        match host_object.methods.get(&name) {
+            Some(IMP::Guest(imp)) => {
+                let types = host_object.guest_method_signatures.get(&name);
+                break (Some(*imp), types.copied().unwrap_or(Ptr::null()));
+            }
+            // Host methods can't be called directly by the app, but sending the
+            // message has the same ABI and reaches them.
+            Some(IMP::Host(_)) => break (None, Ptr::null()),
+            None => class = host_object.superclass,
+        }
+    };
+    let imp = match imp {
+        Some(imp) => imp,
+        None => env
+            .dyld
+            .create_proc_address(&mut env.mem, &mut env.cpu, "_objc_msgSend")
+            .unwrap(),
+    };
+    let method = method_t {
+        name: name.as_ptr(),
+        types,
+        imp,
+    };
+    // Same method, same pointer, but with the current implementation.
+    if let Some(&ptr) = env.objc.method_handles.get(&(class, name)) {
+        env.mem.write(ptr, method);
+        return ptr;
+    }
+    let ptr = env.mem.alloc_and_write(method);
+    env.objc.method_handles.insert((class, name), ptr);
+    ptr
 }
 
 pub(super) fn class_getMethodImplementation(env: &mut Environment, cls: Class, name: SEL) -> IMP {

@@ -57,6 +57,14 @@ static inline NSRange NSMakeRange(NSUInteger loc, NSUInteger len) {
 
 // id objc_msgSend(id, SEL, ...);
 
+typedef struct objc_method *Method;
+Method class_getInstanceMethod(Class cls, SEL name);
+#ifdef DEFINE_ME_WHEN_BUILDING_ON_MACOS
+SEL method_getName(Method m);
+// Returns IMP, which isn't declared here.
+void (*method_getImplementation(Method m))(void);
+#endif
+
 // Foundation
 
 @interface NSObject {

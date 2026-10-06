@@ -43,15 +43,16 @@ pub use objects::{
 pub use properties::todo_objc_setter;
 pub use selectors::{selector, SEL};
 
-use crate::mem::ConstVoidPtr;
+use crate::mem::{ConstVoidPtr, MutPtr};
 use crate::Environment;
 use classes::{
-    class_getInstanceSize, class_getMethodImplementation, class_getProperty, class_getSuperclass,
-    class_replaceMethod, objc_getClass, ClassHostObject, FakeClass, UnimplementedClass,
+    class_getInstanceMethod, class_getInstanceSize, class_getMethodImplementation,
+    class_getProperty, class_getSuperclass, class_replaceMethod, objc_getClass, ClassHostObject,
+    FakeClass, UnimplementedClass,
 };
 pub(crate) use messages::objc_msgSend;
 use messages::{objc_msgSendSuper2, objc_msgSend_stret, MsgSendSignature, MsgSendSuperSignature};
-use methods::method_list_t;
+use methods::{method_list_t, method_t};
 use objects::{objc_object, object_getClass, HostObjectEntry};
 use properties::{ivar_list_t, objc_copyStruct, objc_getProperty, objc_setProperty};
 use selectors::sel_registerName;
@@ -84,6 +85,10 @@ pub struct ObjC {
     /// Mutexes for running the +initialize function.
     initializer_threads: HashMap<id, ThreadInitializer>,
 
+    /// What `class_getInstanceMethod` has returned, so a method always gets the
+    /// same `Method`.
+    method_handles: HashMap<(Class, SEL), MutPtr<method_t>>,
+
     /// Temporary storage for optional type information when sending a message.
     /// Type information isn't part of the `objc_msgSend` ABI, so an alternative
     /// channel is needed.
@@ -98,6 +103,7 @@ impl ObjC {
             classes: HashMap::new(),
             sync_mutexes: HashMap::new(),
             initializer_threads: HashMap::new(),
+            method_handles: HashMap::new(),
             message_type_info: None,
         }
     }
@@ -138,6 +144,7 @@ const FUNCTIONS: FunctionExports = &[
     export_c_func!(class_getInstanceSize(_)),
     export_c_func!(class_getSuperclass(_)),
     export_c_func!(class_getProperty(_, _)),
+    export_c_func!(class_getInstanceMethod(_, _)),
     export_c_func!(class_getMethodImplementation(_, _)),
     export_c_func!(class_replaceMethod(_, _, _, _)),
     export_c_func!(objc_msgSend(_, _)),
