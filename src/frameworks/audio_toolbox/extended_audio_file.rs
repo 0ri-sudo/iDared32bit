@@ -56,6 +56,7 @@ type ExtAudioFilePropertyID = u32;
 const kExtAudioFileProperty_FileDataFormat: ExtAudioFilePropertyID = fourcc(b"ffmt");
 const kExtAudioFileProperty_ClientDataFormat: ExtAudioFilePropertyID = fourcc(b"cfmt");
 const kExtAudioFileProperty_FileLengthFrames: ExtAudioFilePropertyID = fourcc(b"#frm");
+const kExtAudioFileProperty_AudioFile: ExtAudioFilePropertyID = fourcc(b"afil");
 
 fn ExtAudioFileOpenURL(
     env: &mut Environment,
@@ -140,6 +141,20 @@ fn ExtAudioFileGetProperty(
             length_frames
         );
         env.mem.write(out_property_data.cast(), length_frames);
+        return 0; // success
+    }
+
+    if in_property_id == kExtAudioFileProperty_AudioFile {
+        if env.mem.read(io_property_data_size) != guest_size_of::<AudioFileID>() {
+            log!("Warning: ExtAudioFileGetProperty() failed");
+            return kAudioFileBadPropertySizeError;
+        }
+        let guest_audio_file = State::get(&mut env.framework_state)
+            .extended_audio_files
+            .get(&in_ext_audio_file)
+            .unwrap()
+            .guest_audio_file;
+        env.mem.write(out_property_data.cast(), guest_audio_file);
         return 0; // success
     }
 
