@@ -164,6 +164,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     () = msg![env; text_label setMinimumFontSize:size];
 }
 
+- (())setAdjustsFontSizeToFitWidth:(bool)adjusts {
+    // TODO: shrink the text to fit
+    todo_objc_setter!(this, adjusts);
+}
+
 - (())setClearsOnBeginEditing:(bool)clear {
     todo_objc_setter!(this, clear);
 }
