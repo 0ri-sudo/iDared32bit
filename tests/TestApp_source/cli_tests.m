@@ -33,8 +33,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
@@ -5770,6 +5772,22 @@ int test_strptime() {
   return 0;
 }
 
+int test_uname() {
+  struct utsname name;
+  memset(&name, 0xff, sizeof(name));
+  if (uname(&name) != 0 || strcmp(name.sysname, "Darwin") != 0) {
+    return -1;
+  }
+  // Same as sysctlbyname("hw.machine").
+  char machine[32];
+  size_t len = sizeof(machine);
+  if (sysctlbyname("hw.machine", machine, &len, NULL, 0) != 0 ||
+      strcmp(name.machine, machine) != 0) {
+    return -2;
+  }
+  return 0;
+}
+
 int test_strftime() {
   struct tm tm;
   char buf[64];
@@ -7080,6 +7098,7 @@ struct {
     FUNC_DEF(test_NSString_stringByReplacingOccurrencesOfString_options_range),
     FUNC_DEF(test_NSString_pathWithComponents),
     FUNC_DEF(test_strptime),
+    FUNC_DEF(test_uname),
     FUNC_DEF(test_strftime),
     FUNC_DEF(test_wcsftime),
     FUNC_DEF(test_RespondsToSelector),

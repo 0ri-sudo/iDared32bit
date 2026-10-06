@@ -48,6 +48,7 @@ fn uname(env: &mut Environment, name: MutPtr<utsname>) -> i32 {
     uts_name.machine[..machine.len()].copy_from_slice(machine);
     uts_name.machine[machine.len()] = 0;
 
+    env.mem.write(name, uts_name);
     0 // Success
 }
 
