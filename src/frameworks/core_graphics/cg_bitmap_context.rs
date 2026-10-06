@@ -19,7 +19,8 @@ use super::cg_image::{
     self, kCGBitmapAlphaInfoMask, kCGBitmapByteOrderMask, kCGImageAlphaFirst, kCGImageAlphaLast,
     kCGImageAlphaNone, kCGImageAlphaNoneSkipFirst, kCGImageAlphaNoneSkipLast, kCGImageAlphaOnly,
     kCGImageAlphaPremultipliedFirst, kCGImageAlphaPremultipliedLast, kCGImageByteOrder32Big,
-    kCGImageByteOrderDefault, CGBitmapInfo, CGImageAlphaInfo, CGImageRef,
+    kCGImageByteOrder32Little, kCGImageByteOrderDefault, CGBitmapInfo, CGImageAlphaInfo,
+    CGImageByteOrderInfo, CGImageRef,
 };
 use super::{CGFloat, CGPoint, CGRect};
 use crate::dyld::{export_c_func, FunctionExports};
@@ -38,6 +39,7 @@ pub(super) struct CGBitmapContextData {
     bytes_per_row: GuestUSize,
     color_space: &'static str,
     alpha_info: CGImageAlphaInfo,
+    byte_order: CGImageByteOrderInfo,
 }
 
 pub fn CGBitmapContextCreate(
@@ -84,6 +86,7 @@ pub fn CGBitmapContextCreate(
             bytes_per_row,
             color_space,
             alpha_info: bitmap_info & kCGBitmapAlphaInfoMask,
+            byte_order: bitmap_info & kCGBitmapByteOrderMask,
         }),
         // TODO: is this the correct default?
         rgb_fill_color: (0.0, 0.0, 0.0, 0.0),
@@ -132,20 +135,27 @@ pub fn CGBitmapContextCreateImage(env: &mut Environment, context: CGContextRef) 
     let CGContextSubclass::CGBitmapContext(bitmap_data) = host_obj.subclass;
     assert!(
         bitmap_data.bits_per_component == 8
-            && bitmap_data.bytes_per_row == bitmap_data.width * 4
             && bitmap_data.color_space == kCGColorSpaceGenericRGB
             && matches!(
                 bitmap_data.alpha_info,
-                kCGImageAlphaNoneSkipLast | kCGImageAlphaPremultipliedLast
+                kCGImageAlphaNoneSkipLast
+                    | kCGImageAlphaPremultipliedLast
+                    | kCGImageAlphaNoneSkipFirst
+                    | kCGImageAlphaPremultipliedFirst
             )
     );
-    let pixels = env
-        .mem
-        .bytes_at(
-            bitmap_data.data.cast(),
-            bitmap_data.bytes_per_row * bitmap_data.height,
-        )
-        .to_vec();
+    // Convert to RGBA.
+    let (r, g, b, a) = pixel_offsets(&bitmap_data);
+    let row_bytes = env.mem.bytes_at(
+        bitmap_data.data.cast(),
+        bitmap_data.bytes_per_row * bitmap_data.height,
+    );
+    let mut pixels = Vec::with_capacity((bitmap_data.width * bitmap_data.height * 4) as usize);
+    for row in row_bytes.chunks(bitmap_data.bytes_per_row as usize) {
+        for pixel in row[..(bitmap_data.width * 4) as usize].chunks(4) {
+            pixels.extend([pixel[r], pixel[g], pixel[b], a.map_or(255, |a| pixel[a])]);
+        }
+    }
     cg_image::from_image(
         env,
         Image::from_pixel_vec(pixels, (bitmap_data.width, bitmap_data.height)),
@@ -154,6 +164,13 @@ pub fn CGBitmapContextCreateImage(env: &mut Environment, context: CGContextRef) 
 
 fn components_for_rgb(bitmap_info: CGBitmapInfo) -> Result<GuestUSize, ()> {
     let byte_order = bitmap_info & kCGBitmapByteOrderMask;
+    if byte_order == kCGImageByteOrder32Little {
+        // Only makes sense for 4-byte pixels. See pixel_offsets.
+        return match components_for_rgb(bitmap_info & !kCGBitmapByteOrderMask) {
+            Ok(4) => Ok(4),
+            _ => Err(()),
+        };
+    }
     if byte_order != kCGImageByteOrderDefault && byte_order != kCGImageByteOrder32Big {
         return Err(()); // TODO: handle other byte orders
     }
@@ -329,6 +346,16 @@ fn blend_premultiplied(
 
 /// per component offsets (r, g, b, a)
 fn pixel_offsets(data: &CGBitmapContextData) -> (usize, usize, usize, Option<usize>) {
+    let (r, g, b, a) = pixel_offsets_big_endian(data);
+    if data.byte_order == kCGImageByteOrder32Little {
+        // The same 32-bit pixel with its bytes the other way round.
+        (3 - r, 3 - g, 3 - b, a.map(|a| 3 - a))
+    } else {
+        (r, g, b, a)
+    }
+}
+
+fn pixel_offsets_big_endian(data: &CGBitmapContextData) -> (usize, usize, usize, Option<usize>) {
     match data.color_space {
         kCGColorSpaceGenericRGB => {
             match data.alpha_info {
@@ -592,6 +619,7 @@ fn test_iter_transformed_pixels() {
                 bytes_per_row: 3 * width,
                 color_space: "kCGColorSpaceGenericRGB",
                 alpha_info: 0,
+                byte_order: kCGImageByteOrderDefault,
             },
             rgb_fill_color: (0.0, 0.0, 0.0, 0.0),
             blend_mode: kCGBlendModeNormal,
