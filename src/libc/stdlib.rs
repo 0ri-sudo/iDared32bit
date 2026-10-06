@@ -556,7 +556,7 @@ fn realpath(
     resolve_name
 }
 
-fn mbstowcs(
+pub fn mbstowcs(
     env: &mut Environment,
     pwcs: MutPtr<wchar_t>,
     s: ConstPtr<u8>,
