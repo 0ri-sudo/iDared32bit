@@ -478,6 +478,12 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, new)
 }
 
+- (id)sortedArrayUsingDescriptors:(id)descriptors { // NSArray<NSSortDescriptor*>*
+    let new = msg![env; this mutableCopy];
+    () = msg![env; new sortUsingDescriptors:descriptors];
+    autorelease(env, new)
+}
+
 @end
 
 // Special variant for use by CFArray with NULL callbacks: objects aren't
@@ -620,6 +626,36 @@ pub const CLASSES: ClassExports = objc_classes! {
             let (l, r): (usize, usize) = (l.try_into().unwrap(), r.try_into().unwrap());
             let res: NSComparisonResult = msg_send(env, (array[l], comparator, array[r]));
             res
+        },
+        &mut |(_, array), l, r| {
+            let (l, r): (usize, usize) = (l.try_into().unwrap(), r.try_into().unwrap());
+            array.swap(l, r);
+        },
+    );
+
+    let (env, _) = user_data;
+    env.objc.borrow_mut::<ArrayHostObject>(this).array = array;
+}
+
+- (())sortUsingDescriptors:(id)descriptors { // NSArray<NSSortDescriptor*>*
+    let descriptors = env.objc.borrow::<ArrayHostObject>(descriptors).array.clone();
+    let host_object: &mut ArrayHostObject = env.objc.borrow_mut(this);
+    let mut array = std::mem::take(&mut host_object.array);
+    let len = array.len().try_into().unwrap();
+    let mut user_data = (env, &mut array);
+    qsort_generic(
+        &mut user_data,
+        len,
+        &mut |(env, array), l, r| {
+            let (l, r): (usize, usize) = (l.try_into().unwrap(), r.try_into().unwrap());
+            for &descriptor in &descriptors {
+                let res: NSComparisonResult =
+                    msg![env; descriptor compareObject:(array[l]) toObject:(array[r])];
+                if res != 0 {
+                    return res;
+                }
+            }
+            0
         },
         &mut |(_, array), l, r| {
             let (l, r): (usize, usize) = (l.try_into().unwrap(), r.try_into().unwrap());
