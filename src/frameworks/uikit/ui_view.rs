@@ -73,6 +73,8 @@ pub struct State {
     pub(super) views: Vec<id>,
     pub ui_window: ui_window::State,
     pub animation_block_count: usize,
+    /// Set by `+[UIView setAnimationsEnabled:NO]`.
+    pub animations_disabled: bool,
 }
 
 pub struct UIViewHostObject {
@@ -159,6 +161,15 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (Class)layerClass {
     env.objc.get_known_class("CALayer", &mut env.mem)
+}
+
++ (bool)areAnimationsEnabled {
+    !env.framework_state.uikit.ui_view.animations_disabled
+}
+
++ (())setAnimationsEnabled:(bool)enabled {
+    log_dbg!("[UIView setAnimationsEnabled:{}]", enabled);
+    env.framework_state.uikit.ui_view.animations_disabled = !enabled;
 }
 
 + (())setAnimationDuration:(NSTimeInterval)duration {

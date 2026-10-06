@@ -706,9 +706,11 @@ fn add_default_implied_basic_animation(
 // TODO: Remove once CAActions are implemented
 fn is_implicit_animation_enabled(env: &mut Environment, layer: id) -> bool {
     // CALayers have implicit animations enabled by default, but UIKit doesn't
-    // unless there's an active UIView animation block.
+    // unless there's an active UIView animation block, and animations haven't
+    // been turned off.
     let delegate = msg![env; layer delegate];
     let uiview_class = env.objc.get_known_class("UIView", &mut env.mem);
     let delegate_is_uiview: bool = msg![env; delegate isKindOfClass:uiview_class];
-    !delegate_is_uiview || env.framework_state.uikit.ui_view.animation_block_count > 0
+    let ui_view = &env.framework_state.uikit.ui_view;
+    !delegate_is_uiview || (ui_view.animation_block_count > 0 && !ui_view.animations_disabled)
 }
