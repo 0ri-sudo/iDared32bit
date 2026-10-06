@@ -274,7 +274,12 @@ impl Dyld {
 
     /// Do linking-related tasks that need doing right after loading the
     /// binaries.
-    pub fn do_initial_linking(&mut self, bins: &[MachO], mem: &mut Mem, objc: &mut ObjC) {
+    pub fn do_initial_linking(
+        &mut self,
+        bins: &[MachO],
+        mem: &mut Mem,
+        objc: &mut ObjC,
+    ) -> Result<(), String> {
         assert!(self.return_to_host_routine.is_none());
         assert!(self.thread_exit_routine.is_none());
         self.return_to_host_routine =
@@ -283,7 +288,7 @@ impl Dyld {
 
         // Currently assuming only the app binary contains Objective-C things.
 
-        objc.register_bin_selectors(&bins[0], mem);
+        objc.register_bin_selectors(&bins[0], mem)?;
         objc.register_host_selectors(mem);
 
         for bin in bins {
@@ -297,6 +302,7 @@ impl Dyld {
         objc.register_bin_categories(&bins[0], mem);
 
         ns_string::register_constant_strings(&bins[0], mem, objc);
+        Ok(())
     }
 
     /// Dumps all lazy symbols (functions) referenced by the binary

@@ -535,7 +535,7 @@ impl Environment {
         let mut objc = objc::ObjC::new();
 
         let mut dyld = dyld::Dyld::new();
-        dyld.do_initial_linking(&bins, &mut mem, &mut objc);
+        dyld.do_initial_linking(&bins, &mut mem, &mut objc)?;
 
         let cpu = cpu::Cpu::new(match options.direct_memory_access {
             true => Some(&mut mem),
@@ -2311,7 +2311,7 @@ mod dylib_sorting_tests {
             let mut objc = ObjC::new();
             let mut dyld = crate::dyld::Dyld::new();
             let bins = [libgcc, libstdcxx];
-            dyld.do_initial_linking(&bins, &mut mem, &mut objc);
+            dyld.do_initial_linking(&bins, &mut mem, &mut objc).unwrap();
 
             let mut cpu = Cpu::new(None);
             cpu.regs_mut()[Cpu::SP] = 0xFFFFF000;

@@ -130,9 +130,9 @@ impl ObjC {
 
     /// For use by [crate::dyld]: register and deduplicate all the selectors
     /// referenced in the application binary.
-    pub fn register_bin_selectors(&mut self, bin: &MachO, mem: &mut Mem) {
+    pub fn register_bin_selectors(&mut self, bin: &MachO, mem: &mut Mem) -> Result<(), String> {
         let Some(selrefs) = bin.get_section("__objc_selrefs") else {
-            return;
+            return Ok(());
         };
 
         assert!(selrefs.size % 4 == 0);
@@ -140,10 +140,16 @@ impl ObjC {
         for i in 0..(selrefs.size / 4) {
             let selref = base + i;
             let sel_cstr = mem.read(selref);
+            if mem.cstr_at_utf8(sel_cstr).is_err() {
+                return Err(format!(
+                    "The app binary is damaged: the selector name at {sel_cstr:?} isn't text. This usually means it was decrypted badly."
+                ));
+            }
 
             let sel = self.register_bin_selector(sel_cstr, mem);
             mem.write(selref, sel.0);
         }
+        Ok(())
     }
 
     /// Dumps all selectors referenced by the binary as JSON to stdout.
