@@ -1857,14 +1857,14 @@ impl Window {
 }
 
 /// The emulated screen for a portrait device of `device` size in points: as
-/// wide as the device family's (twice as wide on an iPad, so things aren't
-/// huge), and the same shape as the device. [None] if that's no bigger than
-/// usual.
+/// wide as the device family's (a third wider on an iPad, so things are 3/4
+/// the size and not huge), and the same shape as the device. [None] if that's
+/// no bigger than usual.
 fn screen_size_for_device(family: DeviceFamily, device: (f32, f32)) -> Option<(u32, u32)> {
     let (mut width, usual_height) = family.portrait_size();
     let (device_width, device_height) = device;
     if device_width >= width as f32 * 2.0 {
-        width *= 2;
+        width = (width as f32 * 4.0 / 3.0).round() as u32;
     }
     let height = (width as f32 * device_height / device_width).round() as u32;
     (height > usual_height).then_some((width, height))
