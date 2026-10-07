@@ -585,6 +585,10 @@ fn app_picker_inner(
     // area, clear of the Dynamic Island or notch and the home indicator.
     let fitted = env.window().is_screen_fitted();
     let (safe_top, _, safe_bottom, _) = env.window().screen_safe_insets();
+    // The version label goes at the top, beside the Dynamic Island or notch
+    // if there is one, so keep the icons below it even when nothing else is
+    // there (e.g. an iPad with a Home button).
+    let top_bar = if fitted { safe_top.max(20.0) } else { 0.0 };
     if fitted {
         () = msg![env; ui_application setStatusBarHidden:true];
     }
@@ -727,7 +731,7 @@ fn app_picker_inner(
             let frame = CGRect {
                 origin: CGPoint {
                     x: 8.0,
-                    y: (safe_top - 15.0).max(0.0) / 2.0,
+                    y: (top_bar - 15.0) / 2.0,
                 },
                 size: CGSize {
                     width: app_frame.size.width / 2.0,
@@ -804,13 +808,10 @@ fn app_picker_inner(
     let buttons_row_center = buttons_row2_center - 37.5;
     let divider = buttons_row_center - 25.0;
     let grid_frame = CGRect {
-        origin: CGPoint {
-            x: 0.0,
-            y: safe_top,
-        },
+        origin: CGPoint { x: 0.0, y: top_bar },
         size: CGSize {
             width: app_frame.size.width,
-            height: divider - safe_top,
+            height: divider - top_bar,
         },
     };
 
