@@ -87,11 +87,10 @@ pub enum DeviceOrientation {
     LandscapeRight,
 }
 fn size_for_orientation(
-    family: DeviceFamily,
+    (width, height): (u32, u32),
     orientation: DeviceOrientation,
     scale_hack: NonZeroU32,
 ) -> (u32, u32) {
-    let (width, height) = family.portrait_size();
     let scale_hack = scale_hack.get();
     match orientation {
         DeviceOrientation::Portrait => (width * scale_hack, height * scale_hack),
@@ -261,6 +260,12 @@ pub struct Window {
     internal_gl_ins: Option<Box<dyn GLESContext>>,
     splash_image: Option<Image>,
     device_family: DeviceFamily,
+    /// The emulated screen's size in portrait, if it's not the device family's
+    /// (see [Self::fit_screen_to_device]).
+    screen_size: Option<(u32, u32)>,
+    /// Space in points to keep clear at the window's edges (top, left, bottom,
+    /// right), e.g. for the Dynamic Island.
+    screen_insets: (f32, f32, f32, f32),
     device_orientation: DeviceOrientation,
     controller_ctx: sdl2::GameControllerSubsystem,
     controllers: Vec<sdl2::controller::GameController>,
@@ -370,8 +375,11 @@ impl Window {
                 .unwrap();
             window
         } else {
-            let (width, height) =
-                size_for_orientation(device_family, device_orientation, scale_hack);
+            let (width, height) = size_for_orientation(
+                device_family.portrait_size(),
+                device_orientation,
+                scale_hack,
+            );
             let window = video_ctx
                 .window(title, width, height)
                 .position_centered()
@@ -431,6 +439,8 @@ impl Window {
             internal_gl_ins: None,
             splash_image: launch_image,
             device_family,
+            screen_size: None,
+            screen_insets: (0.0, 0.0, 0.0, 0.0),
             device_orientation,
             controller_ctx,
             controllers: Vec::new(),
@@ -494,7 +504,7 @@ impl Window {
         ) -> (f32, f32) {
             let (vx, vy, vw, vh) = if independent_of_viewport {
                 let (width, height) = size_for_orientation(
-                    window.device_family,
+                    window.portrait_size(),
                     window.device_orientation,
                     NonZeroU32::new(1).unwrap(),
                 );
@@ -1610,7 +1620,7 @@ impl Window {
                 set_sdl2_orientation(new_orientation);
                 rotate_fullscreen_size(new_orientation, self.window.size())
             } else {
-                size_for_orientation(self.device_family, new_orientation, self.scale_hack)
+                size_for_orientation(self.portrait_size(), new_orientation, self.scale_hack)
             };
 
             // macOS quirk: when resizing the window, the new framebuffer's size
@@ -1673,7 +1683,7 @@ impl Window {
     /// the world.
     pub fn size_unrotated_unscaled(&self) -> (u32, u32) {
         size_for_orientation(
-            self.device_family,
+            self.portrait_size(),
             DeviceOrientation::Portrait,
             NonZeroU32::new(1).unwrap(),
         )
@@ -1685,13 +1695,24 @@ impl Window {
     /// The aspect ratio of this region always reflects the guest app's view of
     /// the world, but the scale and orientation might not.
     pub fn viewport(&self) -> (u32, u32, u32, u32) {
-        let (app_width, app_height) =
-            size_for_orientation(self.device_family, self.device_orientation, self.scale_hack);
+        let (app_width, app_height) = size_for_orientation(
+            self.portrait_size(),
+            self.device_orientation,
+            self.scale_hack,
+        );
         if !self.fullscreen && !Self::rotatable_fullscreen() {
             return (0, 0, app_width, app_height);
         }
 
-        let (screen_width, screen_height) = self.window.drawable_size();
+        let (drawable_width, drawable_height) = self.window.drawable_size();
+        let pixels_per_point = drawable_width as f32 / self.window.size().0 as f32;
+        let (top, left, bottom, right) = self.screen_insets;
+        let [top, left, bottom, right] =
+            [top, left, bottom, right].map(|inset| (inset * pixels_per_point).round() as u32);
+        let (screen_width, screen_height) = (
+            drawable_width - left - right,
+            drawable_height - top - bottom,
+        );
 
         let app_aspect = app_width as f32 / app_height as f32;
         let fit = |width: u32, height: u32| {
@@ -1707,14 +1728,13 @@ impl Window {
         // button (e.g. an iPad app on a 4:3 iPad), shrink the app a little to
         // make room for it along the screen's longer side.
         if self.on_screen_home_button {
-            let pixels_per_point = screen_width as f32 / self.window.size().0 as f32;
             let min_bar = HOME_BUTTON_MIN_RADIUS / HOME_BUTTON_BAR_RATIO * pixels_per_point;
             let bottom_bar = (screen_height - scaled_height) as f32 / 2.0;
             let right_bar = (screen_width - scaled_width) as f32 / 2.0;
             if bottom_bar < min_bar && right_bar < min_bar {
                 let room = (HOME_BUTTON_RADIUS / HOME_BUTTON_BAR_RATIO * pixels_per_point).ceil();
                 let room = room as u32;
-                return if screen_height >= screen_width {
+                let (x, y, width, height) = if screen_height >= screen_width {
                     let (width, height) = fit(screen_width, screen_height - room);
                     let y = (screen_height - room - height) / 2;
                     ((screen_width - width) / 2, y, width, height)
@@ -1723,12 +1743,42 @@ impl Window {
                     let x = (screen_width - room - width) / 2;
                     (x, (screen_height - height) / 2, width, height)
                 };
+                return (x + left, y + top, width, height);
             }
         }
 
         let x = (screen_width - scaled_width) / 2;
         let y = (screen_height - scaled_height) / 2;
-        (x, y, scaled_width, scaled_height)
+        (x + left, y + top, scaled_width, scaled_height)
+    }
+
+    /// The emulated screen's size in portrait, in points.
+    pub fn portrait_size(&self) -> (u32, u32) {
+        self.screen_size
+            .unwrap_or_else(|| self.device_family.portrait_size())
+    }
+
+    /// Whether [Self::fit_screen_to_device] made the screen taller than usual.
+    pub fn is_screen_fitted(&self) -> bool {
+        self.screen_size.is_some()
+    }
+
+    /// Make the emulated screen as tall as the device's safe area allows,
+    /// keeping its width, so the app picker fills modern iPhones. Apps keep the
+    /// screen of the device they were made for.
+    pub fn fit_screen_to_device(&mut self) {
+        if !Self::rotatable_fullscreen() {
+            return;
+        }
+        let (width, height) = self.window.size();
+        let insets @ (top, left, bottom, right) = safe_area_insets();
+        let safe_width = width as f32 - left - right;
+        let safe_height = height as f32 - top - bottom;
+        let safe_area = (safe_width.min(safe_height), safe_width.max(safe_height));
+        if let Some(size) = screen_size_for_device(self.device_family, safe_area) {
+            self.screen_size = Some(size);
+            self.screen_insets = insets;
+        }
     }
 
     /// Special offset to add to y co-ordinates, only when drawing to screen.
@@ -1780,6 +1830,68 @@ impl Window {
     pub fn on_main_stack(&self) -> bool {
         self.on_main_stack
     }
+}
+
+/// The emulated screen for a device whose safe area is `safe_area` in points,
+/// in portrait: as wide as the device family's (twice as wide on an iPad, so
+/// things aren't huge), and as tall as the safe area's shape allows. [None] if
+/// that's no bigger than usual.
+fn screen_size_for_device(family: DeviceFamily, safe_area: (f32, f32)) -> Option<(u32, u32)> {
+    let (mut width, usual_height) = family.portrait_size();
+    let (safe_width, safe_height) = safe_area;
+    if safe_width >= width as f32 * 2.0 {
+        width *= 2;
+    }
+    let height = (width as f32 * safe_height / safe_width).floor() as u32;
+    (height > usual_height).then_some((width, height))
+}
+
+/// The key window's safe area insets in points (top, left, bottom, right).
+fn safe_area_insets() -> (f32, f32, f32, f32) {
+    #[cfg(target_os = "ios")]
+    unsafe {
+        use std::os::raw::{c_char, c_void};
+
+        #[link(name = "objc")]
+        extern "C" {
+            fn objc_getClass(name: *const c_char) -> *mut c_void;
+            fn sel_registerName(name: *const c_char) -> *mut c_void;
+            fn objc_msgSend();
+        }
+
+        #[repr(C)]
+        struct UIEdgeInsets {
+            top: f64,
+            left: f64,
+            bottom: f64,
+            right: f64,
+        }
+
+        type Id = *mut c_void;
+        let send: unsafe extern "C" fn(Id, Id) -> Id =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        let send_insets: unsafe extern "C" fn(Id, Id) -> UIEdgeInsets =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        let sel = |name: &[u8]| sel_registerName(name.as_ptr() as *const _);
+        let app = send(
+            objc_getClass(b"UIApplication\0".as_ptr() as *const _),
+            sel(b"sharedApplication\0"),
+        );
+        let windows = send(app, sel(b"windows\0"));
+        let window = send(windows, sel(b"firstObject\0"));
+        if window.is_null() {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let insets = send_insets(window, sel(b"safeAreaInsets\0"));
+        (
+            insets.top as f32,
+            insets.left as f32,
+            insets.bottom as f32,
+            insets.right as f32,
+        )
+    }
+    #[cfg(not(target_os = "ios"))]
+    (0.0, 0.0, 0.0, 0.0)
 }
 
 /// Whether touchHLE is running on an iPad.

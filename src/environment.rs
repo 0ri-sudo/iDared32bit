@@ -790,7 +790,7 @@ impl Environment {
         let launch_image = None;
 
         assert!(!options.headless);
-        let window = Some(Box::new(window::Window::new(
+        let mut window = Some(Box::new(window::Window::new(
             &format!(
                 "iDared 32bit {}{}{}",
                 super::branding(),
@@ -805,6 +805,8 @@ impl Environment {
             launch_image,
             &options,
         )));
+        // Only the app picker fills a taller screen, games keep 320×480.
+        window.as_mut().unwrap().fit_screen_to_device();
 
         let mut mem = mem::Mem::new();
 

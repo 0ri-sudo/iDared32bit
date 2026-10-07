@@ -580,6 +580,12 @@ fn app_picker_inner(
     let window: id = msg_class![env; UIWindow alloc];
     let window: id = msg![env; window initWithFrame:bounds];
 
+    // On a taller screen the device's own status bar is already shown above
+    // ours, so don't waste the space.
+    if env.window().is_screen_fitted() {
+        () = msg![env; ui_application setStatusBarHidden:true];
+    }
+
     let app_frame: CGRect = msg![env; screen applicationFrame];
     let main_view: id = msg_class![env; UIView alloc];
     let main_view: id = msg![env; main_view initWithFrame:app_frame];
@@ -621,6 +627,25 @@ fn app_picker_inner(
             },
             size: app_frame.size,
         })];
+        // Crop the middle of the image to the screen's shape rather than
+        // stretching it.
+        let image_size: CGSize = msg![env; image size];
+        let scale_x = app_frame.size.width / image_size.width;
+        let scale_y = app_frame.size.height / image_size.height;
+        let scale = scale_x.max(scale_y);
+        let (crop_w, crop_h) = (scale_x / scale, scale_y / scale);
+        let crop = CGRect {
+            origin: CGPoint {
+                x: (1.0 - crop_w) / 2.0,
+                y: (1.0 - crop_h) / 2.0,
+            },
+            size: CGSize {
+                width: crop_w,
+                height: crop_h,
+            },
+        };
+        let layer: id = msg![env; wallpaper layer];
+        () = msg![env; layer setContentsRect:crop];
         () = msg![env; wallpaper setAlpha:(0.5 as CGFloat)];
         () = msg![env; main_view addSubview:wallpaper];
         have_wallpaper = true;
@@ -1061,14 +1086,16 @@ fn make_icon_grid(
     total_app_count: usize,
     have_wallpaper: bool,
 ) -> IconGridStuff {
-    let num_cols = 4;
-    let num_cols_f = num_cols as CGFloat;
-    let num_rows = 4;
     let label_size = CGSize {
         width: 74.0,
         height: 13.0,
     };
     let icon_gap_x: CGFloat = 19.0;
+    // 4 columns on a 320-point screen, more on a wider one.
+    let num_cols = (((app_frame.size.width - 35.0 + icon_gap_x) / (ICON_SIZE.width + icon_gap_x))
+        .floor() as usize)
+        .max(1);
+    let num_cols_f = num_cols as CGFloat;
     let icon_gap_y: CGFloat = 4.0 + label_size.height + 8.0;
     let icon_grid_width = (ICON_SIZE.width * num_cols_f) + icon_gap_x * (num_cols_f - 1.0);
     let icon_grid_origin = CGPoint {
@@ -1083,6 +1110,12 @@ fn make_icon_grid(
             height: app_frame.size.height - 100.0, // divider
         },
     };
+
+    // As many rows as fit above the page control: 4 on a 480-point screen,
+    // more on a taller one.
+    let rows_height = grid_view_frame.size.height - 26.0 - icon_grid_origin.y;
+    let num_rows =
+        (((rows_height + icon_gap_y) / (ICON_SIZE.height + icon_gap_y)).floor() as usize).max(1);
     let grid_view: id = msg_class![env; _touchHLE_AppPickerGridView alloc];
     let grid_view: id = msg![env; grid_view initWithFrame:grid_view_frame];
     {
