@@ -18,7 +18,8 @@ use crate::frameworks::core_graphics::cg_bitmap_context::{
 use crate::frameworks::core_graphics::cg_color::{CGColorHostObject, CGColorRef};
 use crate::frameworks::core_graphics::cg_color_space::CGColorSpaceCreateDeviceRGB;
 use crate::frameworks::core_graphics::cg_context::{
-    CGContextClearRect, CGContextRef, CGContextRelease, CGContextTranslateCTM,
+    set_ctm, CGContextClearRect, CGContextGetCTM, CGContextRef, CGContextRelease,
+    CGContextScaleCTM, CGContextTranslateCTM,
 };
 use crate::frameworks::core_graphics::cg_image::{
     kCGImageAlphaPremultipliedLast, kCGImageByteOrder32Big,
@@ -464,9 +465,13 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     *gles_texture_is_up_to_date = false;
 
+    // The app picker draws at the screen's real resolution, so its text is
+    // sharp. For apps this is 1.
+    let scale = env.window.as_ref().map_or(1.0, |window| window.ui_scale());
+
     // TODO: more correctly handle non-integer sizes?
-    let int_width = size.width.round() as GuestUSize;
-    let int_height = size.height.round() as GuestUSize;
+    let int_width = (size.width * scale).round() as GuestUSize;
+    let int_height = (size.height * scale).round() as GuestUSize;
 
     let need_new_context = cg_context.is_none_or(|existing|
             CGBitmapContextGetWidth(env, existing) != int_width ||
@@ -497,11 +502,13 @@ pub const CLASSES: ClassExports = objc_classes! {
         cg_context.unwrap()
     };
 
+    let ctm = CGContextGetCTM(env, cg_context);
+    CGContextScaleCTM(env, cg_context, scale, scale);
     CGContextTranslateCTM(env, cg_context, -origin.x, -origin.y);
     // TODO: move clearing to UIKit (clearsContextBeforeDrawing)?
     CGContextClearRect(env, cg_context, CGRect { origin, size });
     () = msg![env; delegate drawLayer:this inContext:cg_context];
-    CGContextTranslateCTM(env, cg_context, origin.x, origin.y);
+    set_ctm(env, cg_context, ctm);
 }
 
 // CGImageRef*

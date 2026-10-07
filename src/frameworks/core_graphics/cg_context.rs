@@ -322,6 +322,13 @@ pub fn CGContextGetCTM(env: &mut Environment, context: CGContextRef) -> CGAffine
     log_dbg!("CGContextGetCTM() => {:?}", res);
     res
 }
+/// Not a real Core Graphics function: replaces the CTM, for host code that
+/// changes it temporarily.
+pub fn set_ctm(env: &mut Environment, context: CGContextRef, transform: CGAffineTransform) {
+    env.objc
+        .borrow_mut::<CGContextHostObject>(context)
+        .transform = transform;
+}
 pub fn CGContextGetUserSpaceToDeviceSpaceTransform(
     env: &mut Environment,
     context: CGContextRef,

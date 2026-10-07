@@ -518,6 +518,12 @@ impl CGBitmapContextDrawer<'_> {
     pub fn height(&self) -> GuestUSize {
         self.bitmap_info.height
     }
+    /// How much the current transform scales things up, at least 1. Text is
+    /// rasterized at this scale so that it's sharp.
+    pub fn transform_scale(&self) -> CGFloat {
+        let CGAffineTransform { a, b, c, d, .. } = self.transform;
+        a.hypot(b).max(c.hypot(d)).max(1.0)
+    }
     /// Get the current fill color. The returned color is linear RGB, not sRGB.
     /// It has premultiplied alpha if the context does.
     pub fn rgb_fill_color(&self) -> (CGFloat, CGFloat, CGFloat, CGFloat) {

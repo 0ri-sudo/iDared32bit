@@ -29,7 +29,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub(super) struct State {
-    texture_framebuffer: Option<(GLuint, GLuint)>,
+    /// The texture, its framebuffer, and the texture's size.
+    texture_framebuffer: Option<(GLuint, GLuint, (u32, u32))>,
     recomposite_next: Option<Instant>,
     fps_counter: Option<FpsCounter>,
     misc_gl_objects: Option<MiscGlObjects>,
@@ -137,8 +138,11 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
         msg![env; screen bounds]
     };
     let scale_hack: u32 = env.options.scale_hack.get();
-    let fb_width = screen_bounds.size.width as u32 * scale_hack;
-    let fb_height = screen_bounds.size.height as u32 * scale_hack;
+    // The app picker is drawn at the screen's real resolution, so its text is
+    // sharp. For apps this is 1.
+    let ui_scale = env.window().ui_scale();
+    let fb_width = (screen_bounds.size.width * ui_scale).round() as u32 * scale_hack;
+    let fb_height = (screen_bounds.size.height * ui_scale).round() as u32 * scale_hack;
     let (pot_width, pot_height) = to_pot_texture_dim(fb_width, fb_height);
     let current_rotation = env.window().current_rotation();
     let present_frame_args = (
@@ -167,17 +171,26 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
     // Set up GL objects needed for render-to-texture. We could draw directly
     // to the screen instead, but this way we can reuse the code for scaling and
     // rotating the screen and drawing the virtual cursor.
-    let texture = if let Some((texture, framebuffer)) = env
+    let cached = env
         .framework_state
         .core_animation
         .composition
-        .texture_framebuffer
+        .texture_framebuffer;
+    let texture = if let Some((texture, framebuffer, _)) =
+        cached.filter(|&(_, _, size)| size == (pot_width, pot_height))
     {
         unsafe {
             gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, framebuffer);
         };
         texture
     } else {
+        // The size changed, e.g. the window was rotated.
+        if let Some((texture, framebuffer, _)) = cached {
+            unsafe {
+                gles.DeleteFramebuffersOES(1, &framebuffer);
+                gles.DeleteTextures(1, &texture);
+            }
+        }
         let mut texture = 0;
         let mut framebuffer = 0;
         unsafe {
@@ -238,7 +251,7 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
         env.framework_state
             .core_animation
             .composition
-            .texture_framebuffer = Some((texture, framebuffer));
+            .texture_framebuffer = Some((texture, framebuffer, (pot_width, pot_height)));
         texture
     };
 

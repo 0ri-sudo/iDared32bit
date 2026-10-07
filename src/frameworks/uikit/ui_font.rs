@@ -273,15 +273,13 @@ pub fn draw_font_glyph(
     clip_x: Option<Range<f32>>,
     clip_y: Option<Range<f32>>,
 ) {
+    let scale = raster_glyph.scale();
     let mut glyph_rect = {
         let (x, y) = raster_glyph.origin();
-        let (width, height) = raster_glyph.dimensions();
+        let (width, height) = raster_glyph.size();
         CGRect {
             origin: CGPoint { x, y },
-            size: CGSize {
-                width: width as f32,
-                height: height as f32,
-            },
+            size: CGSize { width, height },
         }
     };
     // The code in font.rs won't and can't clip glyphs hanging over the right
@@ -310,8 +308,8 @@ pub fn draw_font_glyph(
     for ((x, y), (tex_x, tex_y)) in drawer.iter_transformed_pixels(glyph_rect) {
         // TODO: bilinear sampling
         let coverage = raster_glyph.pixel_at((
-            (tex_x * glyph_rect.size.width - 0.5).round() as i32,
-            (tex_y * glyph_rect.size.height - 0.5).round() as i32,
+            (tex_x * glyph_rect.size.width * scale - 0.5).round() as i32,
+            (tex_y * glyph_rect.size.height * scale - 0.5).round() as i32,
         ));
         let (r, g, b, a) = fill_color;
         let (r, g, b, a) = (r * coverage, g * coverage, b * coverage, a * coverage);
@@ -345,6 +343,7 @@ pub fn draw_at_point(
 
     let mut drawer = CGBitmapContextDrawer::new(&env.objc, &mut env.mem, context);
     let fill_color = drawer.rgb_fill_color();
+    let oversample = drawer.transform_scale();
 
     font.draw(
         host_object.size,
@@ -352,6 +351,7 @@ pub fn draw_at_point(
         (point.x, point.y),
         width_and_line_break_mode,
         TextAlignment::Left,
+        oversample,
         |raster_glyph| {
             draw_font_glyph(
                 &mut drawer,
@@ -389,6 +389,7 @@ pub fn draw_in_rect(
 
     let mut drawer = CGBitmapContextDrawer::new(&env.objc, &mut env.mem, context);
     let fill_color = drawer.rgb_fill_color();
+    let oversample = drawer.transform_scale();
 
     let (origin_x_offset, alignment) = match alignment {
         UITextAlignmentLeft => (0.0, TextAlignment::Left),
@@ -403,6 +404,7 @@ pub fn draw_in_rect(
         (rect.origin.x + origin_x_offset, rect.origin.y),
         Some((rect.size.width, convert_line_break_mode(line_break_mode))),
         alignment,
+        oversample,
         |raster_glyph| {
             draw_font_glyph(
                 &mut drawer,

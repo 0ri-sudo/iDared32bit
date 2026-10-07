@@ -268,6 +268,8 @@ pub struct Window {
     screen_safe_insets: (f32, f32, f32, f32),
     /// The emulated screen's points per device point.
     screen_scale: f32,
+    /// See [Self::enable_hidpi_ui].
+    hidpi_ui: bool,
     device_orientation: DeviceOrientation,
     controller_ctx: sdl2::GameControllerSubsystem,
     controllers: Vec<sdl2::controller::GameController>,
@@ -444,6 +446,7 @@ impl Window {
             screen_size: None,
             screen_safe_insets: (0.0, 0.0, 0.0, 0.0),
             screen_scale: 1.0,
+            hidpi_ui: false,
             device_orientation,
             controller_ctx,
             controllers: Vec::new(),
@@ -1764,6 +1767,28 @@ impl Window {
     pub fn portrait_size(&self) -> (u32, u32) {
         self.screen_size
             .unwrap_or_else(|| self.device_family.portrait_size())
+    }
+
+    /// Draw UIKit at the screen's real resolution rather than one pixel per
+    /// point, so text is sharp. This is for the app picker: apps would see
+    /// bigger bitmaps than they expect.
+    pub fn enable_hidpi_ui(&mut self) {
+        self.hidpi_ui = true;
+    }
+
+    /// Pixels per point UIKit draws at (see [Self::enable_hidpi_ui]), which is
+    /// 1 unless that's enabled.
+    pub fn ui_scale(&self) -> f32 {
+        if !self.hidpi_ui {
+            return 1.0;
+        }
+        let (_, _, viewport_width, _) = self.viewport();
+        let (width, _) = size_for_orientation(
+            self.portrait_size(),
+            self.device_orientation,
+            NonZeroU32::new(1).unwrap(),
+        );
+        (viewport_width as f32 / width as f32).max(1.0)
     }
 
     /// Whether [Self::fit_screen_to_device] changed the screen's size.

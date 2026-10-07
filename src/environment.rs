@@ -805,8 +805,10 @@ impl Environment {
             launch_image,
             &options,
         )));
-        // Only the app picker fills a taller screen, games keep 320×480.
+        // Only the app picker fills a taller screen, games keep 320×480. It's
+        // also drawn at the screen's real resolution.
         window.as_mut().unwrap().fit_screen_to_device();
+        window.as_mut().unwrap().enable_hidpi_ui();
 
         let mut mem = mem::Mem::new();
 

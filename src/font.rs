@@ -41,6 +41,8 @@ pub enum WrapMode {
 pub struct RasterGlyph<'a> {
     origin: (f32, f32),
     dimensions: (i32, i32),
+    /// Pixels per unit of [Self::origin] and [Self::size].
+    scale: f32,
     pixels: &'a [f32],
 }
 impl RasterGlyph<'_> {
@@ -48,9 +50,15 @@ impl RasterGlyph<'_> {
     pub fn origin(&self) -> (f32, f32) {
         self.origin
     }
-    /// Get the dimensions, in pixels, of the glyph.
-    pub fn dimensions(&self) -> (i32, i32) {
-        self.dimensions
+    /// Get the size the glyph should be drawn at, which is smaller than its
+    /// dimensions in pixels if it was rasterized at a higher resolution.
+    pub fn size(&self) -> (f32, f32) {
+        let (width, height) = self.dimensions;
+        (width as f32 / self.scale, height as f32 / self.scale)
+    }
+    /// Get the number of pixels per unit of [Self::size].
+    pub fn scale(&self) -> f32 {
+        self.scale
     }
     /// Get the coverage at the given co-ordinates within the glyph.
     pub fn pixel_at(&self, coords: (i32, i32)) -> f32 {
@@ -396,7 +404,10 @@ impl Font {
 
     /// Draw text. Calls the provided callback for each glyph that is to be
     /// drawn. Assumes y starts at the top-left corner and points downwards.
-    /// Used by UIKit for font rendering.
+    /// Used by UIKit for font rendering. Glyphs are rasterized at `oversample`
+    /// times the font size, so that text drawn with a scale transform isn't
+    /// blurry.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw<F: FnMut(RasterGlyph)>(
         &self,
         font_size: f32,
@@ -404,6 +415,7 @@ impl Font {
         origin: (f32, f32),
         wrap: Option<(f32, WrapMode)>,
         alignment: TextAlignment,
+        oversample: f32,
         mut draw_glyph: F,
     ) {
         let lines = self.break_lines(font_size, text, wrap);
@@ -419,8 +431,6 @@ impl Font {
         // a temporary bitmap for the glyph, and then the caller of this
         // function can provide a "draw glyph" callback that can do whatever it
         // wants with this bitmap.
-        // TODO: Do we need to increase the font size when scale transforms are
-        //       used, to avoid blurry text?
         let mut glyph_bitmap: Vec<f32> = Vec::new();
 
         for (line_width, line_text) in lines {
@@ -431,10 +441,10 @@ impl Font {
             };
             for glyph in self.font.layout(
                 line_text,
-                self.scale(font_size),
+                self.scale(font_size * oversample),
                 Point {
-                    x: origin.0 + line_x_offset,
-                    y: baseline,
+                    x: (origin.0 + line_x_offset) * oversample,
+                    y: baseline * oversample,
                 },
             ) {
                 let Some(glyph_bounds) = glyph.pixel_bounding_box() else {
@@ -445,7 +455,7 @@ impl Font {
                 // It's not mandatory since the caller can do it, but it would
                 // be more efficient.
                 if let Some((wrap_width, _)) = wrap {
-                    if glyph_bounds.min.x as f32 > origin.0 + wrap_width {
+                    if glyph_bounds.min.x as f32 / oversample > origin.0 + wrap_width {
                         // Avoid wasting effort on glyphs that are entirely
                         // clipped. Partial clipping is the responsibility of
                         // the draw_glyph implementation.
@@ -465,8 +475,12 @@ impl Font {
                 });
 
                 let raster_glyph = RasterGlyph {
-                    origin: (glyph_bounds.min.x as f32, glyph_bounds.min.y as f32),
+                    origin: (
+                        glyph_bounds.min.x as f32 / oversample,
+                        glyph_bounds.min.y as f32 / oversample,
+                    ),
                     dimensions: (glyph_bitmap_bounds.0 as i32, glyph_bitmap_bounds.1 as i32),
+                    scale: oversample,
                     pixels: &glyph_bitmap,
                 };
 
@@ -624,6 +638,7 @@ impl Font {
             let raster_glyph = RasterGlyph {
                 origin: (x_offset as f32, y_offset as f32),
                 dimensions: (glyph_bitmap_bounds.0 as _, glyph_bitmap_bounds.1 as _),
+                scale: 1.0,
                 pixels: &glyph_bitmap,
             };
 
