@@ -292,6 +292,12 @@ const CONTROLLER_BACK_HOLD: Duration = Duration::from_secs(1);
 /// Whether this platform gets the on-screen Home button. Only iOS needs it,
 /// since it has no Esc key or Back button.
 const ON_SCREEN_HOME_BUTTON_PLATFORM: bool = cfg!(target_os = "ios");
+/// The on-screen Home button's radius in points, if there's room for it.
+const HOME_BUTTON_RADIUS: f32 = 22.0;
+/// Its smallest radius in points; if there's no room for that, it's not shown.
+const HOME_BUTTON_MIN_RADIUS: f32 = 12.0;
+/// Its largest radius relative to the width of the bar it's in.
+const HOME_BUTTON_BAR_RATIO: f32 = 0.35;
 
 impl Window {
     /// Returns [true] if touchHLE is running on a device where we should always
@@ -998,18 +1004,18 @@ impl Window {
         let (vx, vy, vw, vh) = self.viewport();
         let (screen_width, screen_height) = self.window.drawable_size();
         let pixels_per_point = screen_width as f32 / self.window.size().0 as f32;
-        let (bar, x, y) = if vy > 0 {
-            let bar = (screen_height - (vy + vh)) as f32;
+        let bottom_bar = (screen_height - (vy + vh)) as f32;
+        let right_bar = (screen_width - (vx + vw)) as f32;
+        let (bar, x, y) = if bottom_bar > 0.0 && bottom_bar >= right_bar {
             (
-                bar,
+                bottom_bar,
                 screen_width as f32 / 2.0,
-                (vy + vh) as f32 + bar * 0.45,
+                (vy + vh) as f32 + bottom_bar * 0.45,
             )
-        } else if vx > 0 {
-            let bar = (screen_width - (vx + vw)) as f32;
+        } else if right_bar > 0.0 {
             (
-                bar,
-                (vx + vw) as f32 + bar * 0.45,
+                right_bar,
+                (vx + vw) as f32 + right_bar * 0.45,
                 screen_height as f32 / 2.0,
             )
         } else {
@@ -1017,8 +1023,8 @@ impl Window {
         };
         // 44 points across, Apple's minimum size for something to tap, if
         // there's room.
-        let radius = (22.0 * pixels_per_point).min(bar * 0.35);
-        (radius >= 12.0 * pixels_per_point).then_some((x, y, radius))
+        let radius = (HOME_BUTTON_RADIUS * pixels_per_point).min(bar * HOME_BUTTON_BAR_RATIO);
+        (radius >= HOME_BUTTON_MIN_RADIUS * pixels_per_point).then_some((x, y, radius))
     }
 
     /// The on-screen Home button to draw over the app, if it's shown.
@@ -1688,18 +1694,38 @@ impl Window {
         let (screen_width, screen_height) = self.window.drawable_size();
 
         let app_aspect = app_width as f32 / app_height as f32;
-        let screen_aspect = screen_width as f32 / screen_height as f32;
-        let (scaled_width, scaled_height) = if app_aspect < screen_aspect {
-            (
-                (screen_height as f32 * app_aspect).round() as u32,
-                screen_height,
-            )
-        } else {
-            (
-                screen_width,
-                (screen_width as f32 / app_aspect).round() as u32,
-            )
+        let fit = |width: u32, height: u32| {
+            if app_aspect < width as f32 / height as f32 {
+                ((height as f32 * app_aspect).round() as u32, height)
+            } else {
+                (width, (width as f32 / app_aspect).round() as u32)
+            }
         };
+        let (scaled_width, scaled_height) = fit(screen_width, screen_height);
+
+        // If the bars beside the app are too narrow for the on-screen Home
+        // button (e.g. an iPad app on a 4:3 iPad), shrink the app a little to
+        // make room for it along the screen's longer side.
+        if self.on_screen_home_button {
+            let pixels_per_point = screen_width as f32 / self.window.size().0 as f32;
+            let min_bar = HOME_BUTTON_MIN_RADIUS / HOME_BUTTON_BAR_RATIO * pixels_per_point;
+            let bottom_bar = (screen_height - scaled_height) as f32 / 2.0;
+            let right_bar = (screen_width - scaled_width) as f32 / 2.0;
+            if bottom_bar < min_bar && right_bar < min_bar {
+                let room = (HOME_BUTTON_RADIUS / HOME_BUTTON_BAR_RATIO * pixels_per_point).ceil();
+                let room = room as u32;
+                return if screen_height >= screen_width {
+                    let (width, height) = fit(screen_width, screen_height - room);
+                    let y = (screen_height - room - height) / 2;
+                    ((screen_width - width) / 2, y, width, height)
+                } else {
+                    let (width, height) = fit(screen_width - room, screen_height);
+                    let x = (screen_width - room - width) / 2;
+                    (x, (screen_height - height) / 2, width, height)
+                };
+            }
+        }
+
         let x = (screen_width - scaled_width) / 2;
         let y = (screen_height - scaled_height) / 2;
         (x, y, scaled_width, scaled_height)
