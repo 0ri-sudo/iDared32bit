@@ -282,7 +282,9 @@ impl Mem {
     pub fn new() -> Mem {
         let size = std::mem::size_of::<Bytes>();
 
-        let ptr = unsafe { crate::mem::host::allocate_memory(size).unwrap() };
+        let ptr = unsafe { crate::mem::host::allocate_memory(size) }.unwrap_or_else(|e| {
+            panic!("Couldn't reserve 4 GiB of address space for the emulated device: {e}")
+        });
 
         assert_eq!(
             ptr as usize & PAGE_SIZE_ALIGN_MASK as usize,
