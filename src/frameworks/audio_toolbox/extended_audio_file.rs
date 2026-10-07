@@ -166,7 +166,7 @@ fn ExtAudioFileGetProperty(
         ),
     };
 
-    let required_size = property_size(audio_file_property_id);
+    let required_size = property_size(audio_file_property_id).unwrap();
     if env.mem.read(io_property_data_size) != required_size {
         log!("Warning: ExtAudioFileGetProperty() failed");
         return kAudioFileBadPropertySizeError;

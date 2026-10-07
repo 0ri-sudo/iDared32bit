@@ -1300,6 +1300,28 @@ impl OpenAL<'_> {
         if value.is_null() {
             return;
         }
+        if param == AL_SAMPLE_OFFSET {
+            // The position in frames from the start of the queue, including
+            // buffers that have been processed but not unqueued.
+            *value = self.with_ctx(0, |ctx| {
+                let Some(src) = ctx.sources.get(&source) else {
+                    return 0;
+                };
+                let frames = |name: &ALuint| {
+                    ctx.buffers
+                        .get(name)
+                        .map_or(0, |buf| buf.samples.len() / buf.channels.max(1) as usize)
+                };
+                let played: usize = src.queue.iter().take(src.current).map(frames).sum();
+                let within = if src.current < src.queue.len() {
+                    src.sample_pos as usize
+                } else {
+                    0
+                };
+                (played + within).try_into().unwrap_or(ALint::MAX)
+            });
+            return;
+        }
         let v = self.with_source(source, 0, |src| match param {
             AL_SOURCE_STATE => src.al_state(),
             AL_BUFFERS_QUEUED => src.queue.len() as ALint,

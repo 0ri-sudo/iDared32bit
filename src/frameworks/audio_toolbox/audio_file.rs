@@ -71,8 +71,6 @@ pub const kAudioFilePropertyDataFormat: AudioFilePropertyID = fourcc(b"dfmt");
 const kAudioFilePropertyAudioDataByteCount: AudioFilePropertyID = fourcc(b"bcnt");
 const kAudioFilePropertyAudioDataPacketCount: AudioFilePropertyID = fourcc(b"pcnt");
 pub const kAudioFilePropertyPacketSizeUpperBound: AudioFilePropertyID = fourcc(b"pkub");
-const kAudioFilePropertyMagicCookieData: AudioFilePropertyID = fourcc(b"mgic");
-const kAudioFilePropertyChannelLayout: AudioFilePropertyID = fourcc(b"cmap");
 const kAudioFilePropertyEstimatedDuration: AudioFilePropertyID = fourcc(b"edur");
 const kAudioFilePropertyPacketTableInfo: AudioFilePropertyID = fourcc(b"pnfo");
 
@@ -224,8 +222,12 @@ pub fn AudioFileOpenWithCallbacks(
     0 // success
 }
 
-pub(super) fn property_size(property_id: AudioFilePropertyID) -> GuestUSize {
-    match property_id {
+/// The size of a property, or [None] if it's not supported. Unsupported
+/// properties are errors, not panics: on a device, files don't have every
+/// property (e.g. only some formats have a magic cookie), and apps expect
+/// that.
+pub(super) fn property_size(property_id: AudioFilePropertyID) -> Option<GuestUSize> {
+    Some(match property_id {
         kAudioFilePropertyFileFormat => guest_size_of::<u32>(),
         kAudioFilePropertyDataFormat => guest_size_of::<AudioStreamBasicDescription>(),
         kAudioFilePropertyAudioDataByteCount => guest_size_of::<u64>(),
@@ -233,8 +235,8 @@ pub(super) fn property_size(property_id: AudioFilePropertyID) -> GuestUSize {
         kAudioFilePropertyPacketSizeUpperBound => guest_size_of::<u32>(),
         kAudioFilePropertyEstimatedDuration => guest_size_of::<f64>(),
         kAudioFilePropertyPacketTableInfo => guest_size_of::<AudioFilePacketTableInfo>(),
-        _ => unimplemented!("Unimplemented property ID: {}", debug_fourcc(property_id)),
-    }
+        _ => return None,
+    })
 }
 
 fn AudioFileGetPropertyInfo(
@@ -246,12 +248,13 @@ fn AudioFileGetPropertyInfo(
 ) -> OSStatus {
     return_if_null!(in_audio_file);
 
-    if in_property_id == kAudioFilePropertyMagicCookieData
-        || in_property_id == kAudioFilePropertyChannelLayout
-    {
-        // Our currently supported formats probably don't use these properties.
-        // Not sure if this is correct, but it skips some code we don't want to
-        // run in Touch & Go.
+    // Our files don't have e.g. a magic cookie or channel layout. Saying so
+    // also skips some code we don't want to run in Touch & Go.
+    let Some(size) = property_size(in_property_id) else {
+        log!(
+            "AudioFileGetPropertyInfo({}): unsupported property",
+            debug_fourcc(in_property_id)
+        );
         if !out_data_size.is_null() {
             env.mem.write(out_data_size, 0);
         }
@@ -259,9 +262,9 @@ fn AudioFileGetPropertyInfo(
             env.mem.write(is_writable, 0);
         }
         return kAudioFileUnsupportedPropertyError;
-    }
+    };
     if !out_data_size.is_null() {
-        env.mem.write(out_data_size, property_size(in_property_id));
+        env.mem.write(out_data_size, size);
     }
     if !is_writable.is_null() {
         env.mem.write(is_writable, 0); // TODO: probably not always correct
@@ -278,7 +281,13 @@ pub fn AudioFileGetProperty(
 ) -> OSStatus {
     return_if_null!(in_audio_file);
 
-    let required_size = property_size(in_property_id);
+    let Some(required_size) = property_size(in_property_id) else {
+        log!(
+            "AudioFileGetProperty({}): unsupported property",
+            debug_fourcc(in_property_id)
+        );
+        return kAudioFileUnsupportedPropertyError;
+    };
     if env.mem.read(io_data_size) != required_size {
         log!(
             "Warning: AudioFileGetProperty({}) failed, {} != {}",
@@ -296,14 +305,11 @@ pub fn AudioFileGetProperty(
 
     match in_property_id {
         kAudioFilePropertyFileFormat => {
-            let bundle_id = env.bundle.bundle_identifier();
-            if bundle_id.starts_with("com.ea.mirrorsedge.bv")
-                || bundle_id.starts_with("com.ea.mirrorsedge.inc")
-            {
-                log!("Applying game-specific hack for Mirror's Edge: returning WAVE for kAudioFilePropertyFileFormat in AudioFileGetProperty()");
-                env.mem.write(out_property_data.cast(), fourcc(b"WAVE"));
+            if let Some(file_type) = host_object.audio_file.file_type() {
+                env.mem.write(out_property_data.cast(), fourcc(&file_type));
             } else {
-                todo!()
+                log!("AudioFileGetProperty(kAudioFilePropertyFileFormat): unknown file type");
+                return kAudioFileUnsupportedPropertyError;
             }
         }
         kAudioFilePropertyDataFormat => {

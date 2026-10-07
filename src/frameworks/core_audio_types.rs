@@ -134,6 +134,7 @@ impl AudioStreamBasicDescription {
     }
 }
 
+#[derive(Default)]
 #[repr(C, packed)]
 pub struct SMPTETime {
     pub subframes: i16,
@@ -148,6 +149,7 @@ pub struct SMPTETime {
 }
 unsafe impl SafeRead for SMPTETime {}
 
+#[derive(Default)]
 #[repr(C, packed)]
 pub struct AudioTimeStamp {
     pub sample_time: f64,
@@ -159,6 +161,10 @@ pub struct AudioTimeStamp {
     pub _reserved: u32,
 }
 unsafe impl SafeRead for AudioTimeStamp {}
+
+pub type AudioTimeStampFlags = u32;
+pub const kAudioTimeStampSampleTimeValid: AudioTimeStampFlags = 1 << 0;
+pub const kAudioTimeStampHostTimeValid: AudioTimeStampFlags = 1 << 1;
 
 /// Usually a FourCC.
 pub type AudioFormatID = u32;

@@ -19,7 +19,8 @@ use crate::frameworks::core_audio_types::{
     debug_fourcc, fourcc, kAudioFormatAppleIMA4, kAudioFormatAppleLossless,
     kAudioFormatFlagIsBigEndian, kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked,
     kAudioFormatFlagIsSignedInteger, kAudioFormatLinearPCM, kAudioFormatMPEG4AAC,
-    kAudioFormatMPEGLayer3, AudioStreamBasicDescription, AudioTimeStamp,
+    kAudioFormatMPEGLayer3, kAudioTimeStampHostTimeValid, kAudioTimeStampSampleTimeValid,
+    AudioStreamBasicDescription, AudioTimeStamp,
 };
 use crate::frameworks::core_foundation::cf_run_loop::{
     kCFRunLoopCommonModes, CFRunLoopGetMain, CFRunLoopMode, CFRunLoopRef,
@@ -74,6 +75,12 @@ struct AudioQueueHostObject {
     aq_is_running_user_data: Option<MutVoidPtr>,
     is_running_handler: bool,
     dispose_when_stopped: bool,
+    /// Frames in the buffers OpenAL has finished playing since the queue was
+    /// last reset, for `AudioQueueGetCurrentTime()`.
+    frames_played: u64,
+    /// Whether the queue has been started and not stopped since (pausing
+    /// doesn't count), for `AudioQueueGetCurrentTime()`.
+    started: bool,
 }
 
 /// Track whether the audio queue is meant to be running, in order to handle
@@ -111,6 +118,14 @@ unsafe impl SafeRead for AudioQueueBuffer {}
 
 pub type AudioQueueBufferRef = MutPtr<AudioQueueBuffer>;
 
+#[repr(C, packed)]
+pub struct OpaqueAudioQueueTimeline {
+    _filler: u8,
+}
+unsafe impl SafeRead for OpaqueAudioQueueTimeline {}
+
+pub type AudioQueueTimelineRef = MutPtr<OpaqueAudioQueueTimeline>;
+
 /// (*void)(void *in_user_data, AudioQueueRef in_aq, AudioQueueBufferRef in_buf)
 pub type AudioQueueOutputCallback = GuestFunction;
 
@@ -126,10 +141,12 @@ pub const kAudioQueueProperty_IsRunning: AudioQueuePropertyID = fourcc(b"aqrn");
 type AudioQueuePropertyListenerProc = GuestFunction;
 
 const kAudioQueueErr_InvalidBuffer: OSStatus = -66687;
+const kAudioQueueErr_InvalidProperty: OSStatus = -66684;
 const kAudioQueueErr_InvalidPropertySize: OSStatus = -66683;
 const kAudioQueueErr_CannotStart: OSStatus = -66681;
 const kAudioQueueErr_InvalidDevice: OSStatus = -66680;
 const kAudioQueueErr_BufferInQueue: OSStatus = -66679;
+const kAudioQueueErr_InvalidRunState: OSStatus = -66678;
 
 pub fn AudioQueueNewOutput(
     env: &mut Environment,
@@ -193,6 +210,8 @@ pub fn AudioQueueNewOutput(
         aq_is_running_user_data: None,
         is_running_handler: false,
         dispose_when_stopped: false,
+        frames_played: 0,
+        started: false,
     };
 
     let aq_ref = env.mem.alloc_and_write(OpaqueAudioQueue { _filler: 0 });
@@ -434,10 +453,12 @@ fn AudioQueueRemovePropertyListener(
     0 // success
 }
 
-fn property_size(property_id: AudioQueuePropertyID) -> GuestUSize {
+/// The size of a property, or [None] if it's not supported (which is an
+/// error for the app, not a panic).
+fn property_size(property_id: AudioQueuePropertyID) -> Option<GuestUSize> {
     match property_id {
-        kAudioQueueProperty_IsRunning => guest_size_of::<u32>(),
-        _ => unimplemented!("Unimplemented property ID: {}", debug_fourcc(property_id)),
+        kAudioQueueProperty_IsRunning => Some(guest_size_of::<u32>()),
+        _ => None,
     }
 }
 
@@ -449,7 +470,14 @@ fn AudioQueueGetPropertySize(
 ) -> OSStatus {
     return_if_null!(in_aq);
 
-    env.mem.write(out_data_size, property_size(in_property_id));
+    let Some(size) = property_size(in_property_id) else {
+        log!(
+            "TODO: AudioQueueGetPropertySize({}): unsupported property",
+            debug_fourcc(in_property_id)
+        );
+        return kAudioQueueErr_InvalidProperty;
+    };
+    env.mem.write(out_data_size, size);
     0 // success
 }
 
@@ -462,7 +490,13 @@ fn AudioQueueGetProperty(
 ) -> OSStatus {
     return_if_null!(in_aq);
 
-    let required_size = property_size(in_property_id);
+    let Some(required_size) = property_size(in_property_id) else {
+        log!(
+            "TODO: AudioQueueGetProperty({}): unsupported property",
+            debug_fourcc(in_property_id)
+        );
+        return kAudioQueueErr_InvalidProperty;
+    };
     if env.mem.read(io_data_size) != required_size {
         log!("Warning: AudioQueueGetProperty() failed");
         return kAudioQueueErr_InvalidPropertySize;
@@ -787,6 +821,22 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<(), 
     Ok(())
 }
 
+/// The number of frames in an OpenAL buffer.
+fn al_buffer_frames(context: &OpenAL<'_>, al_buffer: ALuint) -> u64 {
+    let get = |param| {
+        let mut value = 0;
+        // GetBufferi() writes through its *const pointer.
+        unsafe { context.GetBufferi(al_buffer, param, (&raw mut value).cast_const()) };
+        value
+    };
+    let (size, bits, channels) = (get(al::AL_SIZE), get(al::AL_BITS), get(al::AL_CHANNELS));
+    let bytes_per_frame = (bits / 8) * channels;
+    if bytes_per_frame <= 0 {
+        return 0;
+    }
+    (size / bytes_per_frame).try_into().unwrap_or(0)
+}
+
 fn unqueue_buffers<F: FnMut(ALuint)>(al_source: ALuint, context: &OpenAL<'_>, mut callback: F) {
     loop {
         let mut al_buffers_processed = 0;
@@ -880,6 +930,7 @@ pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
     let mut buffers_to_reuse = Vec::new();
 
     unqueue_buffers(al_source, &context, |al_buffer| {
+        host_object.frames_played += al_buffer_frames(&context, al_buffer);
         host_object.al_unused_buffers.push(al_buffer);
         let buffer_ref = host_object.buffer_queue.pop_front().unwrap();
         buffers_to_reuse.push(buffer_ref);
@@ -1024,6 +1075,7 @@ pub fn AudioQueueStart(
     let host_object = state.audio_queues.get_mut(&in_aq).unwrap();
 
     host_object.is_running = AudioQueueIsRunning::Running;
+    host_object.started = true;
 
     if is_supported_audio_format(&host_object.format) {
         let al_source = host_object.al_source.unwrap();
@@ -1070,6 +1122,7 @@ fn finish_stopping_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
             .get_mut(&in_aq)
             .unwrap();
         host_object.is_running = AudioQueueIsRunning::Stopped;
+        host_object.started = false;
         (
             host_object.is_running_handler,
             host_object.dispose_when_stopped,
@@ -1153,7 +1206,83 @@ fn AudioQueueReset(env: &mut Environment, in_aq: AudioQueueRef) -> OSStatus {
     }
 
     host_object.buffer_queue.clear();
+    host_object.frames_played = 0;
 
+    0 // success
+}
+
+fn AudioQueueCreateTimeline(
+    env: &mut Environment,
+    in_aq: AudioQueueRef,
+    out_timeline: MutPtr<AudioQueueTimelineRef>,
+) -> OSStatus {
+    return_if_null!(in_aq);
+    return_if_null!(out_timeline);
+
+    // A timeline only matters for reporting discontinuities, e.g. when the
+    // output device changes, which never happens here.
+    let timeline = env
+        .mem
+        .alloc_and_write(OpaqueAudioQueueTimeline { _filler: 0 });
+    env.mem.write(out_timeline, timeline);
+    0 // success
+}
+
+fn AudioQueueDisposeTimeline(
+    env: &mut Environment,
+    in_aq: AudioQueueRef,
+    in_timeline: AudioQueueTimelineRef,
+) -> OSStatus {
+    return_if_null!(in_aq);
+    return_if_null!(in_timeline);
+
+    env.mem.free(in_timeline.cast());
+    0 // success
+}
+
+fn AudioQueueGetCurrentTime(
+    env: &mut Environment,
+    in_aq: AudioQueueRef,
+    _in_timeline: AudioQueueTimelineRef,
+    out_time_stamp: MutPtr<AudioTimeStamp>,
+    out_timeline_discontinuity: MutPtr<u8>, // Boolean*
+) -> OSStatus {
+    return_if_null!(in_aq);
+
+    let host_time = crate::libc::mach::time::mach_absolute_time(env);
+
+    let (state, context) =
+        State::get_with_context(&mut env.framework_state, &mut env.openal_manager);
+    let host_object = state.audio_queues.get(&in_aq).unwrap();
+    if !host_object.started {
+        return kAudioQueueErr_InvalidRunState;
+    }
+
+    // Frames of the buffers already played, plus how far OpenAL is into the
+    // ones still queued.
+    let mut sample_time = host_object.frames_played;
+    if let Some(al_source) = host_object.al_source {
+        let mut offset = 0;
+        unsafe {
+            context.GetSourcei(al_source, al::AL_SAMPLE_OFFSET, &mut offset);
+        }
+        sample_time += u64::try_from(offset).unwrap_or(0);
+    }
+
+    if !out_time_stamp.is_null() {
+        env.mem.write(
+            out_time_stamp,
+            AudioTimeStamp {
+                sample_time: sample_time as f64,
+                host_time,
+                flags: kAudioTimeStampSampleTimeValid | kAudioTimeStampHostTimeValid,
+                ..Default::default()
+            },
+        );
+    }
+    if !out_timeline_discontinuity.is_null() {
+        env.mem.write(out_timeline_discontinuity, 0);
+    }
     0 // success
 }
 
@@ -1255,6 +1384,9 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(AudioQueueStop(_, _)),
     export_c_func!(AudioQueueReset(_)),
     export_c_func!(AudioQueueFlush(_)),
+    export_c_func!(AudioQueueCreateTimeline(_, _)),
+    export_c_func!(AudioQueueDisposeTimeline(_, _)),
+    export_c_func!(AudioQueueGetCurrentTime(_, _, _, _)),
     export_c_func!(AudioQueueFreeBuffer(_, _)),
     export_c_func!(AudioQueueDispose(_, _)),
 ];

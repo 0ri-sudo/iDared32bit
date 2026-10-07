@@ -70,10 +70,36 @@ pub struct AudioDescription {
     pub bits_per_channel: u32,
 }
 
-pub struct AudioFile(AudioFileInner);
+/// The inner file, and the file type as a FourCC (`AudioFileTypeID`), if known.
+pub struct AudioFile(AudioFileInner, Option<[u8; 4]>);
 enum AudioFileInner {
     Wave(hound::WavReader<Cursor<Vec<u8>>>),
     Symphonia(symphonia_formats::SymphoniaDecodedToPcm),
+}
+
+/// Guess a file's type (`AudioFileTypeID`) from its first bytes.
+fn sniff_file_type(bytes: &[u8]) -> Option<[u8; 4]> {
+    let at = |offset: usize, magic: &[u8]| bytes.get(offset..offset + magic.len()) == Some(magic);
+    if at(0, b"RIFF") && at(8, b"WAVE") {
+        Some(*b"WAVE")
+    } else if at(0, b"caff") {
+        Some(*b"caff")
+    } else if at(0, b"FORM") && at(8, b"AIFC") {
+        Some(*b"AIFC")
+    } else if at(0, b"FORM") {
+        Some(*b"AIFF")
+    } else if at(4, b"ftyp") {
+        Some(*b"m4af")
+    } else if at(0, b"ID3") || (bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0) {
+        // ADTS AAC also starts with 0xfff, but layer bits 00 mean it's not MP3.
+        if bytes[1] & 0x06 == 0 && !at(0, b"ID3") {
+            Some(*b"adts")
+        } else {
+            Some(*b"MPG3")
+        }
+    } else {
+        None
+    }
 }
 
 fn wav_to_pcm16<R: std::io::Read>(
@@ -125,6 +151,11 @@ impl AudioFile {
     }
 
     pub fn read_from_vec(bytes: Vec<u8>) -> Result<Self, AudioFileOpenError> {
+        let file_type = sniff_file_type(&bytes);
+        Self::read_from_vec_inner(bytes).map(|inner| AudioFile(inner, file_type))
+    }
+
+    fn read_from_vec_inner(bytes: Vec<u8>) -> Result<AudioFileInner, AudioFileOpenError> {
         // WavReader::new() consume the reader (in this case, a Cursor)
         // passed to it. This is a bit annoying considering we don't know
         // which is appropriate for the file. This is worked around here by
@@ -136,17 +167,17 @@ impl AudioFile {
                 && matches!(spec.bits_per_sample, 8 | 16)
             {
                 let reader = hound::WavReader::new(Cursor::new(bytes)).unwrap();
-                Ok(AudioFile(AudioFileInner::Wave(reader)))
+                Ok(AudioFileInner::Wave(reader))
             } else {
                 // Other sample formats are converted to 16-bit up front.
-                Ok(AudioFile(AudioFileInner::Symphonia(wav_to_pcm16(reader)?)))
+                Ok(AudioFileInner::Symphonia(wav_to_pcm16(reader)?))
             }
         // TODO: Real MP3/MP4/Non-linear PCM container handling. Currently we
         // are immediately decoding the entire file to PCM and acting as if
         // it's a PCM file, simply because because this is easier. Full MP3
         // support would require a lot of changes in Audio Toolbox.
         } else if let Ok(pcm) = symphonia_formats::decode_symphonia_to_pcm(Cursor::new(bytes)) {
-            Ok(AudioFile(AudioFileInner::Symphonia(pcm)))
+            Ok(AudioFileInner::Symphonia(pcm))
         } else {
             Err(AudioFileOpenError::FileDecodeError)
         }
@@ -193,6 +224,11 @@ impl AudioFile {
                 bits_per_channel: 16,
             },
         }
+    }
+
+    /// The file type as a FourCC (`AudioFileTypeID`), if known.
+    pub fn file_type(&self) -> Option<[u8; 4]> {
+        self.1
     }
 
     /// The compressed format the file was decoded from, if any.
@@ -372,16 +408,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_types() {
+        assert_eq!(sniff_file_type(b"RIFF\0\0\0\0WAVEfmt "), Some(*b"WAVE"));
+        assert_eq!(sniff_file_type(b"caff\0\x01\0\0"), Some(*b"caff"));
+        assert_eq!(sniff_file_type(b"FORM\0\0\0\0AIFF"), Some(*b"AIFF"));
+        assert_eq!(sniff_file_type(b"FORM\0\0\0\0AIFC"), Some(*b"AIFC"));
+        assert_eq!(sniff_file_type(b"\0\0\0\x20ftypM4A "), Some(*b"m4af"));
+        assert_eq!(sniff_file_type(b"ID3\x03\0"), Some(*b"MPG3"));
+        assert_eq!(sniff_file_type(&[0xff, 0xfb, 0x90, 0x00]), Some(*b"MPG3"));
+        assert_eq!(sniff_file_type(&[0xff, 0xf1, 0x50, 0x80]), Some(*b"adts"));
+        assert_eq!(sniff_file_type(b"OggS"), None);
+        assert_eq!(sniff_file_type(b""), None);
+    }
+
+    #[test]
     fn compressed_packets() {
         // 2.5 AAC packets of 16-bit stereo
-        let file = AudioFile(AudioFileInner::Symphonia(
-            symphonia_formats::SymphoniaDecodedToPcm {
+        let file = AudioFile(
+            AudioFileInner::Symphonia(symphonia_formats::SymphoniaDecodedToPcm {
                 bytes: vec![0; 2560 * 4],
                 sample_rate: 44100,
                 channels: 2,
                 compressed_format: Some(CompressedFormat::Aac),
-            },
-        ));
+            }),
+            None,
+        );
         assert_eq!(file.compressed_packet_count(), Some(3));
         assert_eq!(
             file.compressed_packets(0, 10, None),

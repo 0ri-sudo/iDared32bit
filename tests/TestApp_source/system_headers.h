@@ -13,6 +13,7 @@
 #include <CoreFoundation/CFBundle.h>
 #include <CoreFoundation/CFData.h>
 #include <CoreFoundation/CFDate.h>
+#include <CoreFoundation/CFRunLoop.h>
 #include <CoreFoundation/CFURL.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -395,6 +396,57 @@ void CGContextShowGlyphsAtPoint(CGContextRef c, CGFloat x, CGFloat y,
 // `UIGraphics.h`
 
 CGContextRef UIGraphicsGetCurrentContext(void);
+
+// AudioToolbox
+
+typedef struct AudioStreamBasicDescription {
+  double mSampleRate;
+  uint32_t mFormatID;
+  uint32_t mFormatFlags;
+  uint32_t mBytesPerPacket;
+  uint32_t mFramesPerPacket;
+  uint32_t mBytesPerFrame;
+  uint32_t mChannelsPerFrame;
+  uint32_t mBitsPerChannel;
+  uint32_t mReserved;
+} AudioStreamBasicDescription;
+typedef struct SMPTETime {
+  int16_t mSubframes;
+  int16_t mSubframeDivisor;
+  uint32_t mCounter;
+  uint32_t mType;
+  uint32_t mFlags;
+  int16_t mHours;
+  int16_t mMinutes;
+  int16_t mSeconds;
+  int16_t mFrames;
+} SMPTETime;
+typedef struct AudioTimeStamp {
+  double mSampleTime;
+  uint64_t mHostTime;
+  double mRateScalar;
+  uint64_t mWordClockTime;
+  SMPTETime mSMPTETime;
+  uint32_t mFlags;
+  uint32_t mReserved;
+} AudioTimeStamp;
+#define kAudioFormatLinearPCM 'lpcm'
+#define kAudioFormatFlagIsSignedInteger (1 << 2)
+#define kAudioFormatFlagIsPacked (1 << 3)
+#define kAudioQueueErr_InvalidRunState -66678
+typedef struct OpaqueAudioQueue *AudioQueueRef;
+typedef struct OpaqueAudioQueueTimeline *AudioQueueTimelineRef;
+typedef struct AudioQueueBuffer *AudioQueueBufferRef;
+typedef void (*AudioQueueOutputCallback)(void *, AudioQueueRef,
+                                         AudioQueueBufferRef);
+OSStatus AudioQueueNewOutput(const AudioStreamBasicDescription *,
+                             AudioQueueOutputCallback, void *, CFRunLoopRef,
+                             CFStringRef, uint32_t, AudioQueueRef *);
+OSStatus AudioQueueDispose(AudioQueueRef, Boolean);
+OSStatus AudioQueueCreateTimeline(AudioQueueRef, AudioQueueTimelineRef *);
+OSStatus AudioQueueDisposeTimeline(AudioQueueRef, AudioQueueTimelineRef);
+OSStatus AudioQueueGetCurrentTime(AudioQueueRef, AudioQueueTimelineRef,
+                                  AudioTimeStamp *, Boolean *);
 
 // Core Animation
 typedef NSString *CAMediaTimingFunctionName;

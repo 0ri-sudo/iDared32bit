@@ -5788,6 +5788,49 @@ int test_uname() {
   return 0;
 }
 
+// The native macOS build doesn't link AudioToolbox.
+#ifndef DEFINE_ME_WHEN_BUILDING_ON_MACOS
+static void test_AudioQueue_callback(void *user_data, AudioQueueRef queue,
+                                     AudioQueueBufferRef buffer) {}
+
+int test_AudioQueueGetCurrentTime() {
+  AudioStreamBasicDescription format = {
+      .mSampleRate = 44100,
+      .mFormatID = kAudioFormatLinearPCM,
+      .mFormatFlags =
+          kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+      .mBytesPerPacket = 4,
+      .mFramesPerPacket = 1,
+      .mBytesPerFrame = 4,
+      .mChannelsPerFrame = 2,
+      .mBitsPerChannel = 16,
+  };
+  AudioQueueRef queue = NULL;
+  if (AudioQueueNewOutput(&format, test_AudioQueue_callback, NULL, NULL, NULL,
+                          0, &queue) != 0) {
+    return -1;
+  }
+  AudioQueueTimelineRef timeline = NULL;
+  if (AudioQueueCreateTimeline(queue, &timeline) != 0 || timeline == NULL) {
+    return -2;
+  }
+  AudioTimeStamp time;
+  Boolean discontinuity = 1;
+  // There's no current time until the queue has been started.
+  if (AudioQueueGetCurrentTime(queue, timeline, &time, &discontinuity) !=
+      kAudioQueueErr_InvalidRunState) {
+    return -3;
+  }
+  if (AudioQueueDisposeTimeline(queue, timeline) != 0) {
+    return -4;
+  }
+  if (AudioQueueDispose(queue, 1) != 0) {
+    return -5;
+  }
+  return 0;
+}
+#endif
+
 int test_strftime() {
   struct tm tm;
   char buf[64];
@@ -7099,6 +7142,9 @@ struct {
     FUNC_DEF(test_NSString_pathWithComponents),
     FUNC_DEF(test_strptime),
     FUNC_DEF(test_uname),
+#ifndef DEFINE_ME_WHEN_BUILDING_ON_MACOS
+    FUNC_DEF(test_AudioQueueGetCurrentTime),
+#endif
     FUNC_DEF(test_strftime),
     FUNC_DEF(test_wcsftime),
     FUNC_DEF(test_RespondsToSelector),
