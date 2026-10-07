@@ -197,7 +197,7 @@ pub unsafe fn present_frame(
     }
 
     // Display the on-screen Home button, in the black bars outside the app:
-    // a ring with a small house inside.
+    // a ring with an X inside.
     if let Some(button) = home_button {
         let HomeButtonOverlay {
             x,
@@ -239,48 +239,30 @@ pub unsafe fn present_frame(
         gles.VertexPointer(2, gles11::FLOAT, 0, ring.as_ptr() as *const GLvoid);
         gles.DrawArrays(gles11::TRIANGLE_STRIP, 0, (SEGMENTS + 1) as GLsizei * 2);
 
-        // House: a roof and a body, then a door darkened out of the body.
-        // Co-ordinates are in units of the radius, with y pointing down.
-        let point = |px: f32, py: f32| to_ndc(x + px * radius, y + py * radius);
-        let mut house = [0f32; 18];
-        for (i, &(px, py)) in [
-            // Roof
-            (0.0, -0.42),
-            (-0.46, -0.02),
-            (0.46, -0.02),
-            // Body
-            (-0.3, -0.03),
-            (0.3, -0.03),
-            (-0.3, 0.36),
-            (0.3, -0.03),
-            (0.3, 0.36),
-            (-0.3, 0.36),
-        ]
-        .iter()
-        .enumerate()
-        {
-            house[i * 2..i * 2 + 2].copy_from_slice(&point(px, py));
+        // An X, which looks the same whichever way the device is held: a
+        // plus sign turned 45°, made of a centre square and four arms that
+        // don't overlap, so no part of it is blended twice. Co-ordinates are
+        // in units of the radius.
+        let (half_width, arm) = (0.13, 0.44);
+        let mut rects = vec![(-half_width, -half_width, half_width, half_width)];
+        rects.extend([
+            (half_width, -half_width, arm, half_width),
+            (-arm, -half_width, -half_width, half_width),
+            (-half_width, half_width, half_width, arm),
+            (-half_width, -arm, half_width, -half_width),
+        ]);
+        let cos45 = std::f32::consts::FRAC_1_SQRT_2;
+        let point = |px: f32, py: f32| {
+            let (rx, ry) = ((px - py) * cos45, (px + py) * cos45);
+            to_ndc(x + rx * radius, y + ry * radius)
+        };
+        let mut cross = Vec::with_capacity(rects.len() * 12);
+        for (x0, y0, x1, y1) in rects {
+            for (px, py) in [(x0, y0), (x1, y0), (x0, y1), (x1, y0), (x1, y1), (x0, y1)] {
+                cross.extend(point(px, py));
+            }
         }
-        gles.VertexPointer(2, gles11::FLOAT, 0, house.as_ptr() as *const GLvoid);
-        gles.DrawArrays(gles11::TRIANGLES, 0, 9);
-
-        let mut door = [0f32; 12];
-        for (i, &(px, py)) in [
-            (-0.08, 0.14),
-            (0.08, 0.14),
-            (-0.08, 0.36),
-            (0.08, 0.14),
-            (0.08, 0.36),
-            (-0.08, 0.36),
-        ]
-        .iter()
-        .enumerate()
-        {
-            door[i * 2..i * 2 + 2].copy_from_slice(&point(px, py));
-        }
-        // Premultiplied black, so it darkens what's behind it.
-        gles.Color4f(0.0, 0.0, 0.0, 0.85);
-        gles.VertexPointer(2, gles11::FLOAT, 0, door.as_ptr() as *const GLvoid);
-        gles.DrawArrays(gles11::TRIANGLES, 0, 6);
+        gles.VertexPointer(2, gles11::FLOAT, 0, cross.as_ptr() as *const GLvoid);
+        gles.DrawArrays(gles11::TRIANGLES, 0, (cross.len() / 2) as GLsizei);
     }
 }
