@@ -111,7 +111,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 // NSString
 - (id)systemVersion {
-    ns_string::get_static_str(env, "2.0")
+    // The original iPad came with iPhone OS 3.2.
+    let version = match env.options.device_family {
+        Some(DeviceFamily::iPad) => "3.2",
+        _ => "2.0",
+    };
+    ns_string::get_static_str(env, version)
 }
 
 - (id)uniqueIdentifier {
