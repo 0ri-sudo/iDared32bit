@@ -2,6 +2,27 @@
 
 iDared 32bit is based on [touchHLE](https://touchhle.org/). This file lists only iDared 32bit's own changes. The touchHLE changes it includes are in [CHANGELOG.md](CHANGELOG.md), which is touchHLE's own changelog, kept exactly as it is upstream.
 
+## NEXT
+
+Compatibility:
+
+- Various audio fixes: games that stream compressed music through audio queues now play it, AAC, MP3 and ALAC files appear compressed to apps as on a device, more WAV formats are supported, and asking for an audio property that doesn't exist gives an error instead of a crash.
+- Taps work in games that keep a hidden window on top of their screen, and image views and labels no longer block taps meant for what's behind them.
+- Core Animation: `CAScrollLayer`, 3D layer transforms, `sublayers` and `contentsRect`, and no unneeded animations for layers moved every frame.
+- Implemented `NSInputStream` and `NSOutputStream` for files, `NSSortDescriptor`, `class_getInstanceMethod()`, `glDiscardFramebufferEXT()`, `+[UIView setAnimationsEnabled:]` and 32-bit little-endian bitmap contexts.
+- Various smaller fixes.
+
+Usability:
+
+- iPad support: iDared 32bit runs natively on iPad using the whole screen, and games made for both iPhone and iPad run their iPad version.
+- The app picker fills the screen on modern iPhones and iPads, fits more apps on each page, and has sharp text and a wallpaper that's no longer stretched.
+- The on-screen Home button is now an X, and stays visible when a game fills the screen.
+- Fixed a crash on launch on older devices with less memory.
+
+Other:
+
+- Clearer errors for files that fail to open and for damaged or badly decrypted app binaries.
+
 ## v1.3.0 (2026-10-03)
 
 Based on touchHLE v0.3.0. Its changes are in [CHANGELOG.md](CHANGELOG.md).
