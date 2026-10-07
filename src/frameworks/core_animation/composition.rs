@@ -142,7 +142,7 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
     let (pot_width, pot_height) = to_pot_texture_dim(fb_width, fb_height);
     let current_rotation = env.window().current_rotation();
     let present_frame_args = (
-        env.window().viewport(),
+        env.window().gl_viewport(),
         env.window().rotation_matrix(),
         env.window().virtual_cursor_visible_at(),
         env.window().home_button_overlay(),

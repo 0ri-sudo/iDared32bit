@@ -263,9 +263,11 @@ pub struct Window {
     /// The emulated screen's size in portrait, if it's not the device family's
     /// (see [Self::fit_screen_to_device]).
     screen_size: Option<(u32, u32)>,
-    /// Space in points to keep clear at the window's edges (top, left, bottom,
-    /// right), e.g. for the Dynamic Island.
-    screen_insets: (f32, f32, f32, f32),
+    /// The emulated screen's safe area insets (top, left, bottom, right) in
+    /// its own points, e.g. to keep clear of the Dynamic Island.
+    screen_safe_insets: (f32, f32, f32, f32),
+    /// The emulated screen's points per device point.
+    screen_scale: f32,
     device_orientation: DeviceOrientation,
     controller_ctx: sdl2::GameControllerSubsystem,
     controllers: Vec<sdl2::controller::GameController>,
@@ -440,7 +442,8 @@ impl Window {
             splash_image: launch_image,
             device_family,
             screen_size: None,
-            screen_insets: (0.0, 0.0, 0.0, 0.0),
+            screen_safe_insets: (0.0, 0.0, 0.0, 0.0),
+            screen_scale: 1.0,
             device_orientation,
             controller_ctx,
             controllers: Vec::new(),
@@ -1242,19 +1245,21 @@ impl Window {
         (x, y, z)
     }
 
-    /// For use when redrawing the screen: Get the cached on-screen position and
-    /// press state of the analog stick-controlled virtual cursor, if it is
-    /// visible.
+    /// For use when redrawing the screen: Get the cached position, relative to
+    /// the viewport, and press state of the analog stick-controlled virtual
+    /// cursor, if it is visible.
     pub fn virtual_cursor_visible_at(&self) -> Option<(f32, f32, bool)> {
         let (x, y, pressed, visible) = self.virtual_cursor_last?;
+        let (vx, vy, _, _) = self.viewport();
+        let (vx, vy) = (vx as f32, vy as f32);
         if visible {
             // When stickyness is in use, the visual cursor movement appears
             // uncomfortably choppy. Showing the un-sticky position is a bit
             // misleading but it *feels* better, and it is documented.
             if let Some((x_unsticky, y_unsticky, _time)) = self.virtual_cursor_last_unsticky {
-                Some((x_unsticky, y_unsticky, pressed))
+                Some((x_unsticky - vx, y_unsticky - vy, pressed))
             } else {
-                Some((x, y, pressed))
+                Some((x - vx, y - vy, pressed))
             }
         } else {
             None
@@ -1458,7 +1463,7 @@ impl Window {
         // OpenGL ES expects bottom-to-top row order for image data, but our
         // image data will be top-to-bottom. A reflection transform compensates.
         let matrix = self.rotation_matrix().multiply(&Matrix::y_flip());
-        let (vx, vy, vw, vh) = self.viewport();
+        let (vx, vy, vw, vh) = self.gl_viewport();
         let viewport = (vx, vy + self.viewport_y_offset(), vw, vh);
 
         let image = self.splash_image.as_ref().unwrap();
@@ -1704,15 +1709,8 @@ impl Window {
             return (0, 0, app_width, app_height);
         }
 
-        let (drawable_width, drawable_height) = self.window.drawable_size();
-        let pixels_per_point = drawable_width as f32 / self.window.size().0 as f32;
-        let (top, left, bottom, right) = self.screen_insets;
-        let [top, left, bottom, right] =
-            [top, left, bottom, right].map(|inset| (inset * pixels_per_point).round() as u32);
-        let (screen_width, screen_height) = (
-            drawable_width - left - right,
-            drawable_height - top - bottom,
-        );
+        let (screen_width, screen_height) = self.window.drawable_size();
+        let pixels_per_point = screen_width as f32 / self.window.size().0 as f32;
 
         let app_aspect = app_width as f32 / app_height as f32;
         let fit = |width: u32, height: u32| {
@@ -1743,13 +1741,23 @@ impl Window {
                     let x = (screen_width - room - width) / 2;
                     (x, (screen_height - height) / 2, width, height)
                 };
-                return (x + left, y + top, width, height);
+                return (x, y, width, height);
             }
         }
 
         let x = (screen_width - scaled_width) / 2;
         let y = (screen_height - scaled_height) / 2;
-        (x + left, y + top, scaled_width, scaled_height)
+        (x, y, scaled_width, scaled_height)
+    }
+
+    /// [Self::viewport] for `glViewport()`, which counts y from the bottom.
+    pub fn gl_viewport(&self) -> (u32, u32, u32, u32) {
+        let (x, y, width, height) = self.viewport();
+        if !self.fullscreen && !Self::rotatable_fullscreen() {
+            return (x, y, width, height);
+        }
+        let (_, drawable_height) = self.window.drawable_size();
+        (x, drawable_height - y - height, width, height)
     }
 
     /// The emulated screen's size in portrait, in points.
@@ -1758,26 +1766,42 @@ impl Window {
             .unwrap_or_else(|| self.device_family.portrait_size())
     }
 
-    /// Whether [Self::fit_screen_to_device] made the screen taller than usual.
+    /// Whether [Self::fit_screen_to_device] changed the screen's size.
     pub fn is_screen_fitted(&self) -> bool {
         self.screen_size.is_some()
     }
 
-    /// Make the emulated screen as tall as the device's safe area allows,
-    /// keeping its width, so the app picker fills modern iPhones. Apps keep the
-    /// screen of the device they were made for.
+    /// The emulated screen's safe area insets (top, left, bottom, right) in
+    /// its own points. These are only non-zero after
+    /// [Self::fit_screen_to_device].
+    pub fn screen_safe_insets(&self) -> (f32, f32, f32, f32) {
+        self.screen_safe_insets
+    }
+
+    /// The emulated screen's points per device point.
+    pub fn screen_scale(&self) -> f32 {
+        self.screen_scale
+    }
+
+    /// Make the emulated screen the same shape as the device's, keeping its
+    /// width, so the app picker fills modern iPhones. Apps keep the screen of
+    /// the device they were made for.
     pub fn fit_screen_to_device(&mut self) {
         if !Self::rotatable_fullscreen() {
             return;
         }
+        // The app picker only has a portrait layout.
         let (width, height) = self.window.size();
-        let insets @ (top, left, bottom, right) = safe_area_insets();
-        let safe_width = width as f32 - left - right;
-        let safe_height = height as f32 - top - bottom;
-        let safe_area = (safe_width.min(safe_height), safe_width.max(safe_height));
-        if let Some(size) = screen_size_for_device(self.device_family, safe_area) {
+        if height <= width {
+            return;
+        }
+        let device = (width as f32, height as f32);
+        if let Some(size) = screen_size_for_device(self.device_family, device) {
+            let scale = size.0 as f32 / device.0;
+            let (top, left, bottom, right) = safe_area_insets();
             self.screen_size = Some(size);
-            self.screen_insets = insets;
+            self.screen_scale = scale;
+            self.screen_safe_insets = (top * scale, left * scale, bottom * scale, right * scale);
         }
     }
 
@@ -1832,17 +1856,17 @@ impl Window {
     }
 }
 
-/// The emulated screen for a device whose safe area is `safe_area` in points,
-/// in portrait: as wide as the device family's (twice as wide on an iPad, so
-/// things aren't huge), and as tall as the safe area's shape allows. [None] if
-/// that's no bigger than usual.
-fn screen_size_for_device(family: DeviceFamily, safe_area: (f32, f32)) -> Option<(u32, u32)> {
+/// The emulated screen for a portrait device of `device` size in points: as
+/// wide as the device family's (twice as wide on an iPad, so things aren't
+/// huge), and the same shape as the device. [None] if that's no bigger than
+/// usual.
+fn screen_size_for_device(family: DeviceFamily, device: (f32, f32)) -> Option<(u32, u32)> {
     let (mut width, usual_height) = family.portrait_size();
-    let (safe_width, safe_height) = safe_area;
-    if safe_width >= width as f32 * 2.0 {
+    let (device_width, device_height) = device;
+    if device_width >= width as f32 * 2.0 {
         width *= 2;
     }
-    let height = (width as f32 * safe_height / safe_width).floor() as u32;
+    let height = (width as f32 * device_height / device_width).round() as u32;
     (height > usual_height).then_some((width, height))
 }
 

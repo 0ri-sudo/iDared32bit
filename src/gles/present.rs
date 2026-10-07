@@ -174,9 +174,7 @@ pub unsafe fn present_frame(
 
     // Display virtual cursor
     if let Some((x, y, pressed)) = virtual_cursor_visible_at {
-        let (vx, vy, vw, vh) = viewport;
-        let x = x - vx as f32;
-        let y = y - vy as f32;
+        let (_, _, vw, vh) = viewport;
 
         gles.DisableClientState(gles11::TEXTURE_COORD_ARRAY);
         gles.Disable(gles11::TEXTURE_2D);

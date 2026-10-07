@@ -583,7 +583,7 @@ unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>) -> (
 /// doing so. The front and back buffers are then swapped.
 unsafe fn present_renderbuffer(env: &mut Environment, _context: id) {
     // Save these for when we need to draw the frame
-    let viewport = env.window.as_mut().unwrap().viewport();
+    let viewport = env.window.as_mut().unwrap().gl_viewport();
     let rotation_matrix = env.window.as_mut().unwrap().rotation_matrix();
     let virtual_cursor_visible_at = env.window.as_mut().unwrap().virtual_cursor_visible_at();
     let home_button = env.window.as_mut().unwrap().home_button_overlay();

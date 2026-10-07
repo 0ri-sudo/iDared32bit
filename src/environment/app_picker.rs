@@ -580,9 +580,12 @@ fn app_picker_inner(
     let window: id = msg_class![env; UIWindow alloc];
     let window: id = msg![env; window initWithFrame:bounds];
 
-    // On a taller screen the device's own status bar is already shown above
-    // ours, so don't waste the space.
-    if env.window().is_screen_fitted() {
+    // When the screen is the device's shape, lay things out like the iOS home
+    // screen: the whole screen is used, but icons and buttons stay in the safe
+    // area, clear of the Dynamic Island or notch and the home indicator.
+    let fitted = env.window().is_screen_fitted();
+    let (safe_top, _, safe_bottom, _) = env.window().screen_safe_insets();
+    if fitted {
         () = msg![env; ui_application setStatusBarHidden:true];
     }
 
@@ -590,6 +593,16 @@ fn app_picker_inner(
     let main_view: id = msg_class![env; UIView alloc];
     let main_view: id = msg![env; main_view initWithFrame:app_frame];
     () = msg![env; window addSubview:main_view];
+    let safe_frame = CGRect {
+        origin: CGPoint {
+            x: 0.0,
+            y: safe_top,
+        },
+        size: CGSize {
+            width: app_frame.size.width,
+            height: app_frame.size.height - safe_top - safe_bottom,
+        },
+    };
 
     // Wallpaper
     let mut found_wallpaper = false;
@@ -663,35 +676,84 @@ fn app_picker_inner(
 
     // Version label
     {
-        let label_frame = CGRect {
-            origin: CGPoint {
-                x: 0.0,
-                y: app_frame.size.height - 20.0,
+        let mut font_size: CGFloat = 12.0;
+        let mut font: id = msg_class![env; UIFont systemFontOfSize:font_size];
+        let full_text = format!(
+            "iDared 32bit {}{}{}",
+            crate::branding(),
+            if crate::branding().is_empty() {
+                ""
+            } else {
+                " "
             },
-            size: CGSize {
-                width: app_frame.size.width - 5.0,
-                height: 15.0,
-            },
+            crate::DISPLAY_VERSION
+        );
+        // Devices with a Dynamic Island or notch have a taller safe area inset
+        // than just a status bar: 59+ and 44–50 points respectively.
+        let device_safe_top = safe_top / env.window().screen_scale();
+        let (label_frame, alignment, text) = if fitted && device_safe_top >= 40.0 {
+            // Beside the Dynamic Island or notch, where the clock would be.
+            // The notch is wider than the island, so there's less room.
+            let cutout_fraction = if device_safe_top >= 55.0 { 0.33 } else { 0.56 };
+            let room = app_frame.size.width * (1.0 - cutout_fraction) / 2.0;
+            let text = ns_string::from_rust_string(env, full_text);
+            let size: CGSize = msg![env; text sizeWithFont:font];
+            let text = if size.width <= room - 12.0 {
+                text
+            } else {
+                // A little smaller is still readable, any smaller isn't.
+                font_size = 11.0;
+                font = msg_class![env; UIFont systemFontOfSize:font_size];
+                let size: CGSize = msg![env; text sizeWithFont:font];
+                if size.width <= room - 12.0 {
+                    text
+                } else {
+                    ns_string::from_rust_string(env, crate::DISPLAY_VERSION.to_string())
+                }
+            };
+            let frame = CGRect {
+                origin: CGPoint {
+                    x: 0.0,
+                    y: (safe_top - 15.0) / 2.0,
+                },
+                size: CGSize {
+                    width: room,
+                    height: 15.0,
+                },
+            };
+            (frame, UITextAlignmentCenter, text)
+        } else if fitted {
+            // In the top left, where the clock would be.
+            let frame = CGRect {
+                origin: CGPoint {
+                    x: 8.0,
+                    y: (safe_top - 15.0).max(0.0) / 2.0,
+                },
+                size: CGSize {
+                    width: app_frame.size.width / 2.0,
+                    height: 15.0,
+                },
+            };
+            let text = ns_string::from_rust_string(env, full_text);
+            (frame, UITextAlignmentLeft, text)
+        } else {
+            let frame = CGRect {
+                origin: CGPoint {
+                    x: 0.0,
+                    y: app_frame.size.height - 20.0,
+                },
+                size: CGSize {
+                    width: app_frame.size.width - 5.0,
+                    height: 15.0,
+                },
+            };
+            let text = ns_string::from_rust_string(env, full_text);
+            (frame, UITextAlignmentRight, text)
         };
         let label: id = msg_class![env; UILabel alloc];
         let label: id = msg![env; label initWithFrame:label_frame];
-        let text = ns_string::from_rust_string(
-            env,
-            format!(
-                "iDared 32bit {}{}{}",
-                crate::branding(),
-                if crate::branding().is_empty() {
-                    ""
-                } else {
-                    " "
-                },
-                crate::DISPLAY_VERSION
-            ),
-        );
         () = msg![env; label setText:text];
-        () = msg![env; label setTextAlignment:UITextAlignmentRight];
-        let font_size: CGFloat = 12.0;
-        let font: id = msg_class![env; UIFont systemFontOfSize:font_size];
+        () = msg![env; label setTextAlignment:alignment];
         () = msg![env; label setFont:font];
         let text_color: id = if have_wallpaper {
             msg_class![env; UIColor whiteColor]
@@ -735,7 +797,22 @@ fn app_picker_inner(
         () = msg![env; main_view addSubview:label];
     }
 
-    let divider = app_frame.size.height - 100.0;
+    // The buttons take the place of the dock. Without a home indicator they
+    // sit where they always have.
+    let bottom_gap = if fitted { safe_bottom.max(8.0) } else { 22.5 };
+    let buttons_row2_center = app_frame.size.height - bottom_gap - 15.0;
+    let buttons_row_center = buttons_row2_center - 37.5;
+    let divider = buttons_row_center - 25.0;
+    let grid_frame = CGRect {
+        origin: CGPoint {
+            x: 0.0,
+            y: safe_top,
+        },
+        size: CGSize {
+            width: app_frame.size.width,
+            height: divider - safe_top,
+        },
+    };
 
     let mut icon_grid_stuff = match &mut apps {
         Ok(ref mut apps) => {
@@ -743,7 +820,8 @@ fn app_picker_inner(
                 env,
                 delegate,
                 main_view,
-                app_frame,
+                grid_frame,
+                fitted,
                 apps.len(),
                 have_wallpaper,
             );
@@ -752,10 +830,13 @@ fn app_picker_inner(
         }
         Err(e) => {
             let label_frame = CGRect {
-                origin: CGPoint { x: 10.0, y: 10.0 },
+                origin: CGPoint {
+                    x: 10.0,
+                    y: grid_frame.origin.y + 10.0,
+                },
                 size: CGSize {
-                    width: app_frame.size.width - 20.0,
-                    height: divider - 20.0,
+                    width: grid_frame.size.width - 20.0,
+                    height: grid_frame.size.height - 20.0,
                 },
             };
             let label: id = msg_class![env; UILabel alloc];
@@ -773,8 +854,6 @@ fn app_picker_inner(
         }
     };
 
-    let buttons_row_center = divider + (app_frame.size.height - divider) / 4.0;
-    let buttons_row2_center = divider + (app_frame.size.height - divider) / 1.6;
     make_button_row(
         env,
         delegate,
@@ -801,10 +880,10 @@ fn app_picker_inner(
     );
 
     let copyright_info_text = crate::licenses::get_text();
-    let mut copyright_info_stuff = setup_copyright_info(env, delegate, main_view, app_frame);
+    let mut copyright_info_stuff = setup_copyright_info(env, delegate, main_view, safe_frame);
     let mut copyright_info_page_idx = 0;
 
-    let quick_options_stuff = setup_quick_options(env, delegate, main_view, app_frame);
+    let quick_options_stuff = setup_quick_options(env, delegate, main_view, safe_frame);
     let mut quick_options_scale_hack: Option<NonZeroU32> = None;
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
@@ -1082,7 +1161,8 @@ fn make_icon_grid(
     env: &mut Environment,
     delegate: id,
     main_view: id,
-    app_frame: CGRect,
+    grid_frame: CGRect,
+    spread_rows: bool,
     total_app_count: usize,
     have_wallpaper: bool,
 ) -> IconGridStuff {
@@ -1092,30 +1172,31 @@ fn make_icon_grid(
     };
     let icon_gap_x: CGFloat = 19.0;
     // 4 columns on a 320-point screen, more on a wider one.
-    let num_cols = (((app_frame.size.width - 35.0 + icon_gap_x) / (ICON_SIZE.width + icon_gap_x))
+    let num_cols = (((grid_frame.size.width - 35.0 + icon_gap_x) / (ICON_SIZE.width + icon_gap_x))
         .floor() as usize)
         .max(1);
     let num_cols_f = num_cols as CGFloat;
-    let icon_gap_y: CGFloat = 4.0 + label_size.height + 8.0;
+    let mut icon_gap_y: CGFloat = 4.0 + label_size.height + 8.0;
     let icon_grid_width = (ICON_SIZE.width * num_cols_f) + icon_gap_x * (num_cols_f - 1.0);
     let icon_grid_origin = CGPoint {
-        x: (app_frame.size.width - icon_grid_width) / 2.0,
+        x: (grid_frame.size.width - icon_grid_width) / 2.0,
         y: 8.0,
     };
 
-    let grid_view_frame = CGRect {
-        origin: CGPoint { x: 0.0, y: 0.0 },
-        size: CGSize {
-            width: app_frame.size.width,
-            height: app_frame.size.height - 100.0, // divider
-        },
-    };
+    let grid_view_frame = grid_frame;
 
     // As many rows as fit above the page control: 4 on a 480-point screen,
     // more on a taller one.
     let rows_height = grid_view_frame.size.height - 26.0 - icon_grid_origin.y;
     let num_rows =
         (((rows_height + icon_gap_y) / (ICON_SIZE.height + icon_gap_y)).floor() as usize).max(1);
+    // Like the iOS home screen, spread the rows out to fill the space.
+    // The last row's label and a little gap must still fit above the dots.
+    if spread_rows && num_rows > 1 {
+        let used = ICON_SIZE.height * num_rows as CGFloat + icon_gap_y * (num_rows - 1) as CGFloat;
+        let spare = rows_height - (4.0 + label_size.height + 6.0) - used;
+        icon_gap_y += spare.max(0.0) / (num_rows - 1) as CGFloat;
+    }
     let grid_view: id = msg_class![env; _touchHLE_AppPickerGridView alloc];
     let grid_view: id = msg![env; grid_view initWithFrame:grid_view_frame];
     {
@@ -1132,14 +1213,18 @@ fn make_icon_grid(
             x: 0.0,
             // The dots stay where they were, 10 points above the grid's
             // bottom, but the strip is taller, to be easier to tap.
-            y: grid_view_frame.size.height - 26.0,
+            y: grid_view_frame.origin.y + grid_view_frame.size.height - 26.0,
         },
         size: CGSize {
-            width: app_frame.size.width,
+            width: grid_view_frame.size.width,
             height: 32.0,
         },
     };
     let page_control: id = msg![env; page_control initWithFrame:page_control_frame];
+    // Just the dots, over the wallpaper.
+    let bg_color: id = msg_class![env; UIColor clearColor];
+    () = msg![env; page_control setBackgroundColor:bg_color];
+    () = msg![env; page_control setOpaque:false];
     () = msg![env; page_control setDelegate:delegate];
     () = msg![env; main_view addSubview:page_control];
 
@@ -1393,11 +1478,11 @@ fn setup_copyright_info(
     env: &mut Environment,
     delegate: id,
     super_view: id,
-    app_frame: CGRect,
+    safe_frame: CGRect,
 ) -> CopyrightInfoStuff {
     let main_frame = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
-        size: app_frame.size,
+        size: safe_frame.size,
     };
 
     let divider = main_frame.size.height - 40.0;
@@ -1405,13 +1490,22 @@ fn setup_copyright_info(
     // Container for all the other stuff
 
     let main_view: id = msg_class![env; UIView alloc];
-    let main_view: id = msg![env; main_view initWithFrame:main_frame];
+    let full_frame: CGRect = msg![env; super_view bounds];
+    let main_view: id = msg![env; main_view initWithFrame:full_frame];
     // TODO: Isn't white the default?
     let bg_color: id = msg_class![env; UIColor whiteColor];
     () = msg![env; main_view setBackgroundColor:bg_color];
     // This main_view is hidden until the copyright info button is tapped.
     () = msg![env; main_view setHidden:true];
     () = msg![env; super_view addSubview:main_view];
+
+    // The background covers the whole screen, but the contents stay in the
+    // safe area, clear of the Dynamic Island and home indicator.
+    let content_view: id = msg_class![env; UIView alloc];
+    let content_view: id = msg![env; content_view initWithFrame:safe_frame];
+    let bg_color: id = msg_class![env; UIColor clearColor];
+    () = msg![env; content_view setBackgroundColor:bg_color];
+    () = msg![env; main_view addSubview:content_view];
 
     // UILabel that will display part of the copyright text
 
@@ -1422,7 +1516,7 @@ fn setup_copyright_info(
             y: padding,
         },
         size: CGSize {
-            width: app_frame.size.width - padding * 2.0,
+            width: safe_frame.size.width - padding * 2.0,
             height: divider - padding * 2.0,
         },
     };
@@ -1437,7 +1531,7 @@ fn setup_copyright_info(
     let font_size: CGFloat = 16.0;
     let font: id = msg_class![env; UIFont systemFontOfSize:font_size];
     () = msg![env; text_label setFont:font];
-    () = msg![env; main_view addSubview:text_label];
+    () = msg![env; content_view addSubview:text_label];
 
     // Navigation
 
@@ -1445,7 +1539,7 @@ fn setup_copyright_info(
     let buttons = make_button_row(
         env,
         delegate,
-        main_view,
+        content_view,
         main_frame.size,
         buttons_row_center,
         &[
@@ -1585,24 +1679,33 @@ fn setup_quick_options(
     env: &mut Environment,
     delegate: id,
     super_view: id,
-    app_frame: CGRect,
+    safe_frame: CGRect,
 ) -> QuickOptionsStuff {
     // UIView*
     let main_frame = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
-        size: app_frame.size,
+        size: safe_frame.size,
     };
 
     // Container for all the other stuff
 
     let main_view: id = msg_class![env; UIView alloc];
-    let main_view: id = msg![env; main_view initWithFrame:main_frame];
+    let full_frame: CGRect = msg![env; super_view bounds];
+    let main_view: id = msg![env; main_view initWithFrame:full_frame];
     // TODO: Isn't white the default?
     let bg_color: id = msg_class![env; UIColor whiteColor];
     () = msg![env; main_view setBackgroundColor:bg_color];
     // This main_view is hidden until the copyright info button is tapped.
     () = msg![env; main_view setHidden:true];
     () = msg![env; super_view addSubview:main_view];
+
+    // The background covers the whole screen, but the contents stay in the
+    // safe area, clear of the Dynamic Island and home indicator.
+    let content_view: id = msg_class![env; UIView alloc];
+    let content_view: id = msg![env; content_view initWithFrame:safe_frame];
+    let bg_color: id = msg_class![env; UIColor clearColor];
+    () = msg![env; content_view setBackgroundColor:bg_color];
+    () = msg![env; main_view addSubview:content_view];
 
     let divider = 40.0;
 
@@ -1634,7 +1737,7 @@ fn setup_quick_options(
         () = msg![env; button addTarget:delegate
                                  action:selector
                        forControlEvents:UIControlEventTouchUpInside];
-        () = msg![env; main_view addSubview:button];
+        () = msg![env; content_view addSubview:button];
     }
 
     enum RowKind {
@@ -1698,13 +1801,13 @@ fn setup_quick_options(
                 let text = ns_string::get_static_str(env, text);
                 () = msg![env; label setText:text];
                 () = msg![env; label setTextAlignment:UITextAlignmentCenter];
-                () = msg![env; main_view addSubview:label];
+                () = msg![env; content_view addSubview:label];
             }
             RowKind::Buttons(buttons) => {
                 button_rows.push(make_button_row(
                     env,
                     delegate,
-                    main_view,
+                    content_view,
                     main_frame.size,
                     row_center,
                     buttons,
@@ -1727,7 +1830,7 @@ fn setup_quick_options(
                 () = msg![env; switch addTarget:delegate
                                          action:selector
                                forControlEvents:UIControlEventValueChanged];
-                () = msg![env; main_view addSubview:switch];
+                () = msg![env; content_view addSubview:switch];
             }
         }
     }
