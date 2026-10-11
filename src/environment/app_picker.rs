@@ -1462,6 +1462,15 @@ fn update_icon_grid(
                 .map(|n| format!("{}…", chars[..n].iter().collect::<String>().trim_end()))
                 .find(|t| size_with_font(env, font, t, None).width <= width)
                 .unwrap_or_else(|| "…".to_owned());
+            // Rather than cut into the first word, drop the words after it.
+            let first_word = name.split(' ').next().unwrap();
+            let cuts_first_word = truncated.len() - '…'.len_utf8() < first_word.len();
+            let truncated =
+                if cuts_first_word && size_with_font(env, font, first_word, None).width <= width {
+                    first_word.to_owned()
+                } else {
+                    truncated
+                };
             let truncated = ns_string::from_rust_string(env, truncated);
             () = msg![env; label setText:truncated];
             release(env, truncated);
