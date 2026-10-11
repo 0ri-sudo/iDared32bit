@@ -10,6 +10,7 @@ Compatibility:
 - Taps work in games that keep a hidden window on top of their screen, and image views and labels no longer block taps meant for what's behind them.
 - Core Animation: `CAScrollLayer`, 3D layer transforms, `sublayers` and `contentsRect`, and no unneeded animations for layers moved every frame.
 - Implemented `NSInputStream` and `NSOutputStream` for files, `NSSortDescriptor`, `class_getInstanceMethod()`, `glDiscardFramebufferEXT()`, `+[UIView setAnimationsEnabled:]` and 32-bit little-endian bitmap contexts.
+- Fixed a crash when quitting some apps while they're loading.
 - Various smaller fixes.
 
 Usability:

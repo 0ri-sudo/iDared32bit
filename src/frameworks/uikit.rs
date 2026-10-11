@@ -159,7 +159,14 @@ pub fn handle_events(env: &mut Environment) -> Option<Instant> {
                 if !env.return_to_app_picker {
                     log!("Handling HomeButton event: returning to app picker.");
                     if !env.is_app_picker {
-                        ui_application::notify_will_terminate(env);
+                        // Some apps crash if they're quit while loading, as
+                        // they would on a device. They're quitting anyway.
+                        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            ui_application::notify_will_terminate(env)
+                        }));
+                        if res.is_err() {
+                            log!("App crashed while quitting, returning to app picker anyway.");
+                        }
                     }
                     env.return_to_app_picker = true;
                 }
