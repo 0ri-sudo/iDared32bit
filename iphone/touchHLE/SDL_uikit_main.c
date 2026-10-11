@@ -13,9 +13,17 @@
 #endif
 
 
+/* The native app picker: Swift in AppPicker.swift, given to Rust here. */
+#include <stddef.h>
+#include <stdint.h>
+typedef char *(*idared_app_picker_fn)(const char *, const uint8_t *const *, size_t);
+extern char *idared_swiftui_app_picker(const char *, const uint8_t *const *, size_t);
+extern void idared_set_swiftui_app_picker(idared_app_picker_fn);
+
 int
 main(int argc, char *argv[])
 {
+    idared_set_swiftui_app_picker(idared_swiftui_app_picker);
     return SDL_UIKitRunApp(argc, argv, SDL_main);
 }
 #endif /* !SDL_MAIN_HANDLED */

@@ -20,6 +20,7 @@ Usability:
 - The on-screen Home button is now an X, and stays visible when a game fills the screen.
 - Fixed a crash on launch on older devices with less memory.
 - The app picker shows apps' localized names, as on a device, fits slightly longer names, and ends names that don't fit with "…".
+- On iOS, the app picker is now native, with a new look.
 
 Other:
 

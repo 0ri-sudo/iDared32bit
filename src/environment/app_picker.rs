@@ -2,6 +2,12 @@
 //!
 //! This also includes a license text viewer. The license text viewer is needed
 //! on Android, where the command-line way to view license text doesn't exist.
+//!
+//! On iOS, a native SwiftUI picker is used instead when the app provides one
+//! (see `app_picker/swiftui.rs`).
+
+#[cfg(target_os = "ios")]
+mod swiftui;
 
 use crate::bundle::Bundle;
 use crate::frameworks::core_graphics::cg_bitmap_context::{
@@ -35,10 +41,8 @@ use crate::objc::{
 };
 use crate::options::Options;
 use crate::paths;
-use crate::window::DeviceOrientation;
 use crate::Environment;
 use std::ffi::OsStr;
-use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 struct AppInfo {
@@ -82,6 +86,10 @@ pub fn app_picker(options: Options) -> Result<(PathBuf, Vec<String>), String> {
             })
     };
 
+    #[cfg(target_os = "ios")]
+    if swiftui::is_available() {
+        return swiftui::app_picker(apps);
+    }
     show_app_picker_gui(options, apps)
 }
 
@@ -147,18 +155,10 @@ struct AppPickerDelegateHostObject {
     copyright_next: bool,
     quick_options_show: bool,
     quick_options_hide: bool,
-    scale_hack_default: bool,
-    scale_hack1: bool,
-    scale_hack2: bool,
-    scale_hack3: bool,
-    scale_hack4: bool,
-    orientation_default: bool,
-    orientation_portrait_upside_down: bool,
-    orientation_landscape_left: bool,
-    orientation_landscape_right: bool,
-    analog_stick_tilt_controls: Option<bool>,
-    network: Option<bool>,
-    fullscreen: Option<bool>,
+    /// The quick option button (`UIButton*`) that was tapped.
+    quick_option_choice: Option<id>,
+    /// The quick option switch (`UISwitch*`) that was changed.
+    quick_option_switch: Option<id>,
 }
 impl HostObject for AppPickerDelegateHostObject {}
 
@@ -271,44 +271,11 @@ const CLASSES: ClassExports = objc_classes! {
 - (())quickOptionsHide {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).quick_options_hide = true;
 }
-- (())scaleHackDefault {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack_default = true;
+- (())quickOptionChoice:(id)button { // UIButton*
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).quick_option_choice = Some(button);
 }
-- (())scaleHack1 {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack1 = true;
-}
-- (())scaleHack2 {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack2 = true;
-}
-- (())scaleHack3 {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack3 = true;
-}
-- (())scaleHack4 {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack4 = true;
-}
-- (())orientationDefault {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).orientation_default = true;
-}
-- (())orientationPortraitUpsideDown {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).orientation_portrait_upside_down = true;
-}
-- (())orientationLandscapeLeft {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).orientation_landscape_left = true;
-}
-- (())orientationLandscapeRight {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).orientation_landscape_right = true;
-}
-- (())analogStickTiltControls:(id)switch { // UISwitch*
-    let switch_state: bool = msg![env; switch isOn];
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).analog_stick_tilt_controls = Some(switch_state);
-}
-- (())network:(id)switch { // UISwitch*
-    let switch_state: bool = msg![env; switch isOn];
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).network = Some(switch_state);
-}
-- (())fullscreen:(id)switch { // UISwitch*
-    let switch_state: bool = msg![env; switch isOn];
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).fullscreen = Some(switch_state);
+- (())quickOptionSwitch:(id)switch { // UISwitch*
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).quick_option_switch = Some(switch);
 }
 
 - (())openFileManager {
@@ -890,11 +857,8 @@ fn app_picker_inner(
     let mut copyright_info_page_idx = 0;
 
     let quick_options_stuff = setup_quick_options(env, delegate, main_view, safe_frame);
-    let mut quick_options_scale_hack: Option<NonZeroU32> = None;
-    let mut quick_options_fullscreen: Option<()> = None;
-    let mut quick_options_orientation: Option<DeviceOrientation> = None;
-    let mut quick_options_analog_stick_tilt_controls = true;
-    let mut quick_options_network = false;
+    let mut quick_option_values: Vec<usize> =
+        quick_options().map(QuickOption::default_value).collect();
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
         for (idx, &button) in buttons.iter().enumerate() {
@@ -906,35 +870,11 @@ fn app_picker_inner(
             () = msg![env; button setBackgroundColor:color];
         }
     }
-    fn update_scale_hack_buttons(env: &mut Environment, buttons: &[id], value: Option<NonZeroU32>) {
-        update_quick_option_buttons(env, buttons, value.map_or(0, |v| v.get() as usize));
+    for (option, controls) in quick_options().zip(&quick_options_stuff.controls) {
+        if let QuickOptionKind::Choice(_) = option.kind {
+            update_quick_option_buttons(env, controls, option.default_value());
+        }
     }
-    fn update_orientation_buttons(
-        env: &mut Environment,
-        buttons: &[id],
-        value: Option<DeviceOrientation>,
-    ) {
-        update_quick_option_buttons(
-            env,
-            buttons,
-            value.map_or(0, |v| match v {
-                DeviceOrientation::LandscapeLeft => 1,
-                DeviceOrientation::LandscapeRight => 2,
-                DeviceOrientation::PortraitUpsideDown => 3,
-                _ => panic!(),
-            }),
-        );
-    }
-    update_scale_hack_buttons(
-        env,
-        &quick_options_stuff.scale_hack_buttons,
-        quick_options_scale_hack,
-    );
-    update_orientation_buttons(
-        env,
-        &quick_options_stuff.orientation_buttons,
-        quick_options_orientation,
-    );
 
     () = msg![env; window makeKeyAndVisible];
 
@@ -1047,105 +987,25 @@ fn app_picker_inner(
             () = msg![env; (quick_options_stuff.main_view) setHidden:false];
         } else if std::mem::take(&mut host_obj.quick_options_hide) {
             () = msg![env; (quick_options_stuff.main_view) setHidden:true];
-        } else if std::mem::take(&mut host_obj.scale_hack_default) {
-            quick_options_scale_hack = None;
-            update_scale_hack_buttons(
-                env,
-                &quick_options_stuff.scale_hack_buttons,
-                quick_options_scale_hack,
-            );
-        } else if std::mem::take(&mut host_obj.scale_hack1) {
-            quick_options_scale_hack = Some(NonZeroU32::new(1).unwrap());
-            update_scale_hack_buttons(
-                env,
-                &quick_options_stuff.scale_hack_buttons,
-                quick_options_scale_hack,
-            );
-        } else if std::mem::take(&mut host_obj.scale_hack2) {
-            quick_options_scale_hack = Some(NonZeroU32::new(2).unwrap());
-            update_scale_hack_buttons(
-                env,
-                &quick_options_stuff.scale_hack_buttons,
-                quick_options_scale_hack,
-            );
-        } else if std::mem::take(&mut host_obj.scale_hack3) {
-            quick_options_scale_hack = Some(NonZeroU32::new(3).unwrap());
-            update_scale_hack_buttons(
-                env,
-                &quick_options_stuff.scale_hack_buttons,
-                quick_options_scale_hack,
-            );
-        } else if std::mem::take(&mut host_obj.scale_hack4) {
-            quick_options_scale_hack = Some(NonZeroU32::new(4).unwrap());
-            update_scale_hack_buttons(
-                env,
-                &quick_options_stuff.scale_hack_buttons,
-                quick_options_scale_hack,
-            );
-        } else if std::mem::take(&mut host_obj.orientation_default) {
-            quick_options_orientation = None;
-            update_orientation_buttons(
-                env,
-                &quick_options_stuff.orientation_buttons,
-                quick_options_orientation,
-            );
-        } else if std::mem::take(&mut host_obj.orientation_portrait_upside_down) {
-            quick_options_orientation = Some(DeviceOrientation::PortraitUpsideDown);
-            update_orientation_buttons(
-                env,
-                &quick_options_stuff.orientation_buttons,
-                quick_options_orientation,
-            );
-        } else if std::mem::take(&mut host_obj.orientation_landscape_left) {
-            quick_options_orientation = Some(DeviceOrientation::LandscapeLeft);
-            update_orientation_buttons(
-                env,
-                &quick_options_stuff.orientation_buttons,
-                quick_options_orientation,
-            );
-        } else if std::mem::take(&mut host_obj.orientation_landscape_right) {
-            quick_options_orientation = Some(DeviceOrientation::LandscapeRight);
-            update_orientation_buttons(
-                env,
-                &quick_options_stuff.orientation_buttons,
-                quick_options_orientation,
-            );
-        } else if let Some(enabled) = std::mem::take(&mut host_obj.analog_stick_tilt_controls) {
-            quick_options_analog_stick_tilt_controls = enabled;
-        } else if let Some(enabled) = std::mem::take(&mut host_obj.network) {
-            quick_options_network = enabled;
-        } else if let Some(fullscreen) = std::mem::take(&mut host_obj.fullscreen) {
-            quick_options_fullscreen = match fullscreen {
-                false => None,
-                true => Some(()),
-            };
+        } else if let Some(button) = std::mem::take(&mut host_obj.quick_option_choice) {
+            for (i, buttons) in quick_options_stuff.controls.iter().enumerate() {
+                if let Some(choice) = buttons.iter().position(|&b| b == button) {
+                    quick_option_values[i] = choice;
+                    update_quick_option_buttons(env, buttons, choice);
+                }
+            }
+        } else if let Some(switch) = std::mem::take(&mut host_obj.quick_option_switch) {
+            for (i, controls) in quick_options_stuff.controls.iter().enumerate() {
+                if controls == &[switch] {
+                    let on: bool = msg![env; switch isOn];
+                    quick_option_values[i] = on as usize;
+                }
+            }
         }
     };
 
     // Apply user-specified overrides
-    if let Some(scale_hack) = quick_options_scale_hack {
-        option_args.push(format!("--scale-hack={}", scale_hack.get()));
-    }
-    if let Some(orientation) = quick_options_orientation {
-        option_args.push(
-            match orientation {
-                DeviceOrientation::LandscapeLeft => "--landscape-left",
-                DeviceOrientation::LandscapeRight => "--landscape-right",
-                DeviceOrientation::PortraitUpsideDown => "--upside-down",
-                _ => todo!(),
-            }
-            .to_string(),
-        );
-    }
-    if let Some(()) = quick_options_fullscreen {
-        option_args.push("--fullscreen".to_string());
-    }
-    if !quick_options_analog_stick_tilt_controls {
-        option_args.push("--disable-analog-stick-tilt-controls".to_string());
-    }
-    if quick_options_network {
-        option_args.push("--allow-network-access".to_string());
-    }
+    option_args.extend(quick_option_args(&quick_option_values));
 
     // Return the environment so some parts of it can be salvaged.
     (app_path, option_args)
@@ -1734,10 +1594,128 @@ fn change_copyright_page(
     () = msg![env; next_page_button setHidden:(Some(page_idx) == *last_page_idx)];
 }
 
+/// One of the quick options. Both this picker and the SwiftUI one on iOS
+/// (see `app_picker/swiftui.rs`) are built from [QUICK_OPTIONS].
+pub(super) struct QuickOption {
+    pub label: &'static str,
+    /// Shown under the option in the SwiftUI picker.
+    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+    pub footer: &'static str,
+    pub kind: QuickOptionKind,
+    /// Hidden on always-fullscreen platforms.
+    pub desktop_only: bool,
+}
+
+pub(super) enum QuickOptionKind {
+    /// Each choice is its title and the option argument it adds. The first is
+    /// the default.
+    Choice(&'static [(&'static str, Option<&'static str>)]),
+    /// The option arguments added when it's on or off.
+    Switch {
+        default: bool,
+        on: Option<&'static str>,
+        off: Option<&'static str>,
+    },
+}
+
+impl QuickOption {
+    /// The choice index, or for a switch, 1 if it's on.
+    pub fn default_value(&self) -> usize {
+        match self.kind {
+            QuickOptionKind::Choice(_) => 0,
+            QuickOptionKind::Switch { default, .. } => default as usize,
+        }
+    }
+
+    fn arg(&self, value: usize) -> Option<&'static str> {
+        match self.kind {
+            QuickOptionKind::Choice(choices) => choices[value].1,
+            QuickOptionKind::Switch { on, off, .. } => {
+                if value != 0 {
+                    on
+                } else {
+                    off
+                }
+            }
+        }
+    }
+}
+
+const QUICK_OPTIONS: &[QuickOption] = &[
+    QuickOption {
+        label: "Scale hack",
+        footer: "Runs the app at a higher resolution. This may not work with every app.",
+        kind: QuickOptionKind::Choice(&[
+            ("Default", None),
+            ("Off", Some("--scale-hack=1")),
+            ("2×", Some("--scale-hack=2")),
+            ("3×", Some("--scale-hack=3")),
+            ("4×", Some("--scale-hack=4")),
+        ]),
+        desktop_only: false,
+    },
+    QuickOption {
+        label: "Orientation",
+        footer: "For apps that are in the wrong orientation.",
+        kind: QuickOptionKind::Choice(&[
+            ("Default", None),
+            ("←", Some("--landscape-left")),
+            ("→", Some("--landscape-right")),
+            ("↓", Some("--upside-down")),
+        ]),
+        desktop_only: false,
+    },
+    QuickOption {
+        label: "Network access",
+        footer: "Without this, apps see what an iPhone in airplane mode would.",
+        kind: QuickOptionKind::Switch {
+            default: false,
+            on: Some("--allow-network-access"),
+            off: None,
+        },
+        desktop_only: false,
+    },
+    QuickOption {
+        label: "Use analog sticks for tilt controls",
+        footer: "Use a controller's analog sticks to tilt the device.",
+        kind: QuickOptionKind::Switch {
+            default: true,
+            on: None,
+            off: Some("--disable-analog-stick-tilt-controls"),
+        },
+        desktop_only: false,
+    },
+    QuickOption {
+        label: "Fullscreen (override)",
+        footer: "",
+        kind: QuickOptionKind::Switch {
+            default: false,
+            on: Some("--fullscreen"),
+            off: None,
+        },
+        desktop_only: true,
+    },
+];
+
+/// The quick options shown on this platform.
+pub(super) fn quick_options() -> impl Iterator<Item = &'static QuickOption> {
+    QUICK_OPTIONS
+        .iter()
+        .filter(|option| !option.desktop_only || !crate::window::Window::rotatable_fullscreen())
+}
+
+/// The option arguments for the values (see [QuickOption::default_value]) of
+/// [quick_options].
+pub(super) fn quick_option_args(values: &[usize]) -> impl Iterator<Item = String> + '_ {
+    quick_options()
+        .zip(values)
+        .filter_map(|(option, &value)| option.arg(value).map(ToOwned::to_owned))
+}
+
 struct QuickOptionsStuff {
     main_view: id,
-    scale_hack_buttons: [id; 5],
-    orientation_buttons: [id; 4],
+    /// For each of [quick_options], its buttons, or its switch.
+    controls: Vec<Vec<id>>,
 }
 
 fn setup_quick_options(
@@ -1805,104 +1783,101 @@ fn setup_quick_options(
         () = msg![env; content_view addSubview:button];
     }
 
-    enum RowKind {
-        Label(&'static str),
-        Buttons(&'static [(&'static str, &'static str)]),
-        Switch(&'static str, bool),
-    }
-    let rows = [
-        RowKind::Label("Scale hack"),
-        RowKind::Buttons(&[
-            ("Default", "scaleHackDefault"),
-            ("Off", "scaleHack1"),
-            ("2×", "scaleHack2"),
-            ("3×", "scaleHack3"),
-            ("4×", "scaleHack4"),
-        ]),
-        RowKind::Label("Orientation"),
-        RowKind::Buttons(&[
-            ("Default", "orientationDefault"),
-            ("←", "orientationLandscapeLeft"),
-            ("→", "orientationLandscapeRight"),
-            ("↓", "orientationPortraitUpsideDown"),
-        ]),
-        RowKind::Label("Network access"),
-        RowKind::Switch("network:", false),
-        RowKind::Label("Use analog sticks for tilt controls"),
-        RowKind::Switch("analogStickTiltControls:", true),
-        // ---- (divider for stuff skipped below)
-        RowKind::Label("Fullscreen (override)"),
-        RowKind::Switch("fullscreen:", false),
-    ];
-    let rows_len_full = rows.len();
-    let rows = if crate::window::Window::rotatable_fullscreen() {
-        // Fullscreen option doesn't make sense on always-fullscreen platforms
-        &rows[..rows.len() - 2]
-    } else {
-        &rows[..]
+    // Each option is a label and a row of buttons or a switch. They're spaced
+    // as if all were shown, even on platforms where some are hidden.
+    let row_count = QUICK_OPTIONS.len() * 2;
+    let row_center = |row: usize| {
+        divider
+            + ((1 + row) as CGFloat)
+                * ((main_frame.size.height - divider) / ((row_count + 1) as CGFloat))
     };
 
-    let mut button_rows = Vec::new();
-    for (i, row) in rows.iter().enumerate() {
-        let row_center = divider
-            + ((1 + i) as CGFloat)
-                * ((main_frame.size.height - divider) / ((rows_len_full + 1) as CGFloat));
+    let mut controls = Vec::new();
+    for (i, option) in quick_options().enumerate() {
+        let label_center = row_center(i * 2);
+        let frame = CGRect {
+            origin: CGPoint {
+                x: 0.0,
+                y: label_center - 30.0 / 2.0,
+            },
+            size: CGSize {
+                width: main_frame.size.width,
+                height: 30.0,
+            },
+        };
+        let label: id = msg_class![env; UILabel alloc];
+        let label: id = msg![env; label initWithFrame:frame];
+        let text = ns_string::get_static_str(env, option.label);
+        () = msg![env; label setText:text];
+        () = msg![env; label setTextAlignment:UITextAlignmentCenter];
+        () = msg![env; content_view addSubview:label];
 
-        match *row {
-            RowKind::Label(text) => {
-                let frame = CGRect {
-                    origin: CGPoint {
-                        x: 0.0,
-                        y: row_center - 30.0 / 2.0,
-                    },
-                    size: CGSize {
-                        width: main_frame.size.width,
-                        height: 30.0,
-                    },
-                };
-
-                let label: id = msg_class![env; UILabel alloc];
-                let label: id = msg![env; label initWithFrame:frame];
-                let text = ns_string::get_static_str(env, text);
-                () = msg![env; label setText:text];
-                () = msg![env; label setTextAlignment:UITextAlignmentCenter];
-                () = msg![env; content_view addSubview:label];
-            }
-            RowKind::Buttons(buttons) => {
-                button_rows.push(make_button_row(
+        let center = row_center(i * 2 + 1);
+        match option.kind {
+            QuickOptionKind::Choice(choices) => {
+                let buttons: Vec<_> = choices
+                    .iter()
+                    .map(|&(title, _)| (title, "quickOptionChoice:"))
+                    .collect();
+                controls.push(make_button_row(
                     env,
                     delegate,
                     content_view,
                     main_frame.size,
-                    row_center,
-                    buttons,
+                    center,
+                    &buttons,
                     /* font_size: */ None,
                 ));
             }
-            RowKind::Switch(selector, default_state) => {
+            QuickOptionKind::Switch { default, .. } => {
                 let switch_frame = CGRect {
                     origin: CGPoint {
                         x: main_frame.size.width / 2.0 - 94.0 / 2.0,
-                        y: row_center - 27.0 / 2.0,
+                        y: center - 27.0 / 2.0,
                     },
                     size: Default::default(),
                 };
 
                 let switch: id = msg_class![env; UISwitch alloc];
                 let switch: id = msg![env; switch initWithFrame:switch_frame];
-                () = msg![env; switch setOn:default_state];
-                let selector = env.objc.lookup_selector(selector).unwrap();
+                () = msg![env; switch setOn:default];
+                let selector = env.objc.lookup_selector("quickOptionSwitch:").unwrap();
                 () = msg![env; switch addTarget:delegate
                                          action:selector
                                forControlEvents:UIControlEventValueChanged];
                 () = msg![env; content_view addSubview:switch];
+                controls.push(vec![switch]);
             }
         }
     }
 
     QuickOptionsStuff {
         main_view,
-        scale_hack_buttons: button_rows[0][..].try_into().unwrap(),
-        orientation_buttons: button_rows[1][..].try_into().unwrap(),
+        controls,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quick_option_args_from_values() {
+        let mut values: Vec<usize> = quick_options().map(QuickOption::default_value).collect();
+        assert_eq!(quick_option_args(&values).count(), 0);
+
+        values[0] = 3; // Scale hack: 3×
+        values[1] = 2; // Orientation: landscape right
+        values[2] = 1; // Network access: on
+        values[3] = 0; // Analog sticks for tilt controls: off
+        assert_eq!(
+            quick_option_args(&values).collect::<Vec<_>>(),
+            [
+                "--scale-hack=3",
+                "--landscape-right",
+                "--allow-network-access",
+                "--disable-analog-stick-tilt-controls",
+            ],
+        );
     }
 }
