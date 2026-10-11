@@ -1155,9 +1155,13 @@ const ICON_SIZE: CGSize = CGSize {
     width: 57.0,
     height: 57.0,
 };
+const LABEL_WIDTH: CGFloat = 74.0;
+/// About two characters wider, used when the neighbouring names leave room.
+const LABEL_MAX_WIDTH: CGFloat = 86.0;
 
 struct IconGridStuff {
     page_control: id,
+    num_cols: usize,
     icon_buttons_and_labels: Vec<(id, id)>,
     placeholder_icon: Option<id>,
     pages: Vec<std::ops::Range<usize>>,
@@ -1173,7 +1177,7 @@ fn make_icon_grid(
     have_wallpaper: bool,
 ) -> IconGridStuff {
     let label_size = CGSize {
-        width: 74.0,
+        width: LABEL_WIDTH,
         height: 13.0,
     };
     let icon_gap_x: CGFloat = 19.0;
@@ -1309,6 +1313,7 @@ fn make_icon_grid(
 
     IconGridStuff {
         page_control,
+        num_cols,
         icon_buttons_and_labels,
         placeholder_icon: None,
         pages,
@@ -1416,6 +1421,35 @@ fn update_icon_grid(
     for &(icon_button, label) in icon_iter {
         () = msg![env; icon_button setImage:nil forState:UIControlStateNormal];
         () = msg![env; label setText:(ns_string::get_static_str(env, ""))];
+    }
+
+    // Let a name grow past LABEL_WIDTH only while it can't touch the names
+    // either side of it.
+    let num_cols = icon_grid_stuff.num_cols;
+    let items = &icon_grid_stuff.icon_buttons_and_labels;
+    let text_widths: Vec<CGFloat> = items
+        .iter()
+        .map(|&(_, label)| {
+            let text: id = msg![env; label text];
+            let font: id = msg![env; label font];
+            let size: CGSize = msg![env; text sizeWithFont:font];
+            size.width.min(LABEL_MAX_WIDTH)
+        })
+        .collect();
+    for (i, &(icon_button, label)) in items.iter().enumerate() {
+        let mut width = text_widths[i];
+        if i % num_cols > 0 {
+            width = width.min(2.0 * LABEL_WIDTH - text_widths[i - 1]);
+        }
+        if i % num_cols + 1 < num_cols && i + 1 < items.len() {
+            width = width.min(2.0 * LABEL_WIDTH - text_widths[i + 1]);
+        }
+        let width = width.max(LABEL_WIDTH).ceil();
+        let icon_frame: CGRect = msg![env; icon_button frame];
+        let mut frame: CGRect = msg![env; label frame];
+        frame.origin.x = (icon_frame.origin.x + (ICON_SIZE.width - width) / 2.0).round();
+        frame.size.width = width;
+        () = msg![env; label setFrame:frame];
     }
 }
 

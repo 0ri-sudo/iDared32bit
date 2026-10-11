@@ -18,7 +18,7 @@ Usability:
 - The app picker fills the screen on modern iPhones and iPads, fits more apps on each page, and has sharp text and a wallpaper that's no longer stretched.
 - The on-screen Home button is now an X, and stays visible when a game fills the screen.
 - Fixed a crash on launch on older devices with less memory.
-- The app picker shows apps' localized names, as on a device.
+- The app picker shows apps' localized names, as on a device, and fits slightly longer names.
 
 Other:
 
