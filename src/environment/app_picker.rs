@@ -57,7 +57,12 @@ pub fn app_picker(options: Options) -> Result<(PathBuf, Vec<String>), String> {
     let apps: Result<Vec<AppInfo>, String> = if !apps_dir.is_dir() {
         Err(format!("The {} directory couldn't be found. Check you're running touchHLE from the right directory.", paths::APPS_DIR))
     } else {
-        enumerate_apps(&apps_dir)
+        let languages = options.preferred_languages.clone().unwrap_or_else(|| {
+            sdl2::locale::get_preferred_locales()
+                .map(|loc| loc.lang)
+                .collect()
+        });
+        enumerate_apps(&apps_dir, &languages)
             .map_err(|err| {
                 format!(
                     "Couldn't get list of apps in the {} directory: {}.",
@@ -80,7 +85,7 @@ pub fn app_picker(options: Options) -> Result<(PathBuf, Vec<String>), String> {
     show_app_picker_gui(options, apps)
 }
 
-fn enumerate_apps(apps_dir: &Path) -> Result<Vec<AppInfo>, std::io::Error> {
+fn enumerate_apps(apps_dir: &Path, languages: &[String]) -> Result<Vec<AppInfo>, std::io::Error> {
     let mut apps = Vec::new();
     for app in std::fs::read_dir(apps_dir)? {
         let app_path = app?.path();
@@ -106,7 +111,7 @@ fn enumerate_apps(apps_dir: &Path) -> Result<Vec<AppInfo>, std::io::Error> {
         };
 
         // TODO: what if this crashes?
-        let display_name = bundle.display_name().to_owned();
+        let display_name = bundle.localized_display_name(&fs, languages);
 
         let icon = match bundle.load_icon(&fs) {
             Ok(icon) => Some(icon),

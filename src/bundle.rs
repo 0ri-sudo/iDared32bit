@@ -11,6 +11,7 @@
 //!   * [Anatomy of an iOS Application Bundle](https://developer.apple.com/library/archive/documentation/CoreFoundation/Conceptual/CFBundles/BundleTypes/BundleTypes.html)
 //! * [Bundle Resources](https://developer.apple.com/documentation/bundleresources?language=objc)
 
+use crate::frameworks::foundation::ns_bundle::LANG_ID_TO_LANG_PROJ;
 use crate::fs::{BundleData, Fs, GuestPath, GuestPathBuf};
 use crate::image::Image;
 use crate::window::DeviceFamily;
@@ -106,6 +107,50 @@ impl Bundle {
         } else {
             ""
         }
+    }
+
+    /// Name shown on the home screen, as on iOS: `CFBundleDisplayName`, then
+    /// `CFBundleName`, preferring values from the localized
+    /// `InfoPlist.strings`, then the bundle's file name.
+    pub fn localized_display_name(&self, fs: &Fs, languages: &[String]) -> String {
+        let strings = self.localized_info_plist_strings(fs, languages);
+        ["CFBundleDisplayName", "CFBundleName"]
+            .iter()
+            .find_map(|&key| {
+                strings
+                    .as_ref()
+                    .and_then(|d| d.get(key))
+                    .or_else(|| self.plist.get(key))
+                    .and_then(|v| v.as_string())
+            })
+            .unwrap_or_else(|| self.bundle_name())
+            .to_owned()
+    }
+
+    /// `InfoPlist.strings` for the first preferred language the bundle has,
+    /// falling back to `CFBundleDevelopmentRegion`.
+    fn localized_info_plist_strings(&self, fs: &Fs, languages: &[String]) -> Option<Dictionary> {
+        let dev_region = self
+            .plist
+            .get("CFBundleDevelopmentRegion")
+            .and_then(|v| v.as_string());
+        let bytes = languages
+            .iter()
+            .map(String::as_str)
+            .chain(dev_region)
+            .flat_map(|lang| {
+                let code = lang.split(['-', '_']).next().unwrap();
+                LANG_ID_TO_LANG_PROJ
+                    .iter()
+                    .filter(move |&&(id, _)| id == code)
+                    .flat_map(|&(_, lprojs)| lprojs.iter().map(|&l| l.to_owned()))
+                    .chain([format!("{lang}.lproj")])
+            })
+            .find_map(|lproj| {
+                fs.read(self.path.join(&lproj).join("InfoPlist.strings"))
+                    .ok()
+            })?;
+        parse_strings(&bytes)
     }
 
     pub fn minimum_os_version(&self) -> Option<&str> {
@@ -321,4 +366,36 @@ impl Bundle {
             })
             .unwrap_or_else(|| vec![DeviceFamily::iPhone])
     }
+}
+
+/// Parses a `.strings` file: a binary or XML plist, or text in UTF-8 or
+/// UTF-16 (with a BOM).
+fn parse_strings(bytes: &[u8]) -> Option<Dictionary> {
+    if let Ok(Value::Dictionary(dict)) = Value::from_reader(Cursor::new(bytes)) {
+        return Some(dict);
+    }
+    let utf16 = |rest: &[u8], from_bytes: fn([u8; 2]) -> u16| {
+        let units: Vec<u16> = rest.as_chunks().0.iter().map(|&c| from_bytes(c)).collect();
+        String::from_utf16(&units).ok()
+    };
+    let text = match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes)?,
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes)?,
+        _ => {
+            let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+            String::from_utf8(bytes.to_vec()).ok()?
+        }
+    };
+    // Text .strings files are a plist dictionary without the braces. The
+    // parser reads bytes as Latin-1, so escape anything that isn't ASCII.
+    let text: String = text
+        .encode_utf16()
+        .map(|u| match u {
+            0..0x80 => char::from(u as u8).to_string(),
+            _ => format!("\\U{u:04x}"),
+        })
+        .collect();
+    Value::from_reader_ascii(format!("{{{text}}}").as_bytes())
+        .ok()?
+        .into_dictionary()
 }

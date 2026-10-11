@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 // Should be ISO 639-1 (or ISO 639-2) compliant
 // Legacy projects use language names while newer ones use language code lprojs
 // TODO: complete this list or use some crate for mapping
-const LANG_ID_TO_LANG_PROJ: &[(&str, &[&str])] = &[
+pub const LANG_ID_TO_LANG_PROJ: &[(&str, &[&str])] = &[
     ("da", &["Danish.lproj", "da.lproj"]),
     ("nl", &["Dutch.lproj", "nl.lproj"]),
     ("en", &["English.lproj", "en.lproj"]),
