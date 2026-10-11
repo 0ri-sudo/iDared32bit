@@ -11,6 +11,7 @@ Compatibility:
 - Core Animation: `CAScrollLayer`, 3D layer transforms, `sublayers` and `contentsRect`, and no unneeded animations for layers moved every frame.
 - Implemented `NSInputStream` and `NSOutputStream` for files, `NSSortDescriptor`, `class_getInstanceMethod()`, `glDiscardFramebufferEXT()`, `+[UIView setAnimationsEnabled:]` and 32-bit little-endian bitmap contexts.
 - Fixed a crash when quitting some apps while they're loading.
+- Fixed crashes in apps that read text files to the end.
 - Various smaller fixes.
 
 Usability:
