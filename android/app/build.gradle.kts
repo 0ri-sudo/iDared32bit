@@ -6,6 +6,7 @@
  * Parts of this file are derived from SDL 2's Android project template, which
  * has a different license. Please see vendor/SDL/LICENSE.txt for details.
  */
+import java.util.Properties
 import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
 
 plugins {
@@ -29,8 +30,38 @@ fun getTouchHLEBranding(): String {
     return runTouchHLEVersionTool(/* wantBranding: */ true)
 }
 
-fun getTouchHLEVersionName(): String {
-    return runTouchHLEVersionTool(/* wantBranding: */ false)
+// The app's version and build number are set only in iphone/Config.xcconfig,
+// for iOS and Android alike (see the comment there).
+fun getXcconfigSetting(key: String): String {
+    val xcconfig = rootDir.parentFile.resolve("iphone/Config.xcconfig")
+    return xcconfig.readLines().firstNotNullOfOrNull { line ->
+        val parts = line.split("=", limit = 2)
+        if (parts.size == 2 && parts[0].trim() == key) parts[1].trim() else null
+    } ?: throw GradleException("$key must be set in iphone/Config.xcconfig")
+}
+
+fun getVersionName(): String {
+    return getXcconfigSetting("MARKETING_VERSION")
+}
+
+// The versionCode is made from the version and build number: 1.2.23 build 1
+// is 1022301.
+fun getVersionCode(): Int {
+    val version = getVersionName().split(".").map { it.toInt() }
+    val build = getXcconfigSetting("CURRENT_PROJECT_VERSION").toInt()
+    if (version.size != 3 || version[1] > 99 || version[2] > 99 || build !in 1..99) {
+        throw GradleException("Can't make a versionCode from ${getVersionName()} build $build")
+    }
+    return version[0] * 1000000 + version[1] * 10000 + version[2] * 100 + build
+}
+
+// Release builds are signed with the key in android/keystore.properties, which
+// is git-ignored, if there is one, and otherwise with the debug key.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
 }
 
 fun join(prefix: String, separator: String, branding: String): String {
@@ -38,8 +69,9 @@ fun join(prefix: String, separator: String, branding: String): String {
 }
 
 android {
-    ndkVersion = "25.2.9519653"
-    compileSdk = 31
+    // NDK r28 and later build native code for 16 KB memory pages by default.
+    ndkVersion = "28.2.13676358"
+    compileSdk = 36
     buildFeatures {
         buildConfig = true
     }
@@ -49,14 +81,15 @@ android {
         if (!branding.isEmpty()) {
             applicationIdSuffix = branding.lowercase()
         }
-        resValue("string", "app_name", join("touchHLE", " ", branding))
-        buildConfigField("String", "APP_NAME", "\"${join("touchHLE", " ", branding)}\"")
+        resValue("string", "app_name", join("iDared 32bit", " ", branding))
+        buildConfigField("String", "APP_NAME", "\"${join("iDared 32bit", " ", branding)}\"")
         manifestPlaceholders["icon"] = join("@drawable/icon", "_", branding.lowercase())
         buildConfigField("int", "APP_ICON", join("R.drawable.icon", "_", branding.lowercase()))
-        versionName = join(getTouchHLEVersionName(), " ", branding)
+        versionName = join(getVersionName(), " ", branding)
+        versionCode = getVersionCode()
 
         minSdk = 21 // first version with AArch64
-        targetSdk = 31
+        targetSdk = 36
         externalNativeBuild {
             ndkBuild {
                 arguments("APP_PLATFORM=android-21")
@@ -84,11 +117,27 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            create("upload") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("upload")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             isMinifyEnabled = false
-            isDebuggable = true // allow use of ADB to manage files, etc
+            // Files can be managed with the Files app, through
+            // DocumentsProvider.
+            isDebuggable = false
         }
         debug {
             isMinifyEnabled = false
@@ -174,7 +223,7 @@ cargoNdk {
         "--lib",
         "--no-default-features",
         "--features",
-        "touchHLE_openal_soft_wrapper/static,sdl2/bundled"
+        "sdl2/bundled"
     )
 }
 

@@ -66,7 +66,7 @@ You need three additional things for Android:
     - Install "Command line tools only": https://developer.android.com/studio/index.html#command-line-tools-only
       - You might also need to install Gradle (check the version in `android/gradle/wrapper/gradle-wrapper.properties`)
 
-This has been tested on macOS 12.7.6 with Android Studio 2024.3.2 Patch 1 and NDK version 25.2.9519653.
+The NDK version must match `ndkVersion` in `android/app/build.gradle.kts`, currently 28.2.13676358 (r28c). Android Studio installs it if you ask it to.
 
 ## Building
 

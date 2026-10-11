@@ -9,9 +9,9 @@
 <!-- Replace com.test.game with the identifier of your game below, e.g.
      com.gamemaker.game
 -->
+<!-- The versionCode is set in build.gradle.kts, from iphone/Config.xcconfig. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    android:installLocation="auto"
-    android:versionCode="1">
+    android:installLocation="auto">
 
     <!-- Touchscreen support -->
     <uses-feature
@@ -56,8 +56,12 @@
     <!-- if you want to capture audio, uncomment this. -->
     <!-- <uses-permission android:name="android.permission.RECORD_AUDIO" /> -->
 
+    <!-- appCategory="game": since Android 16, the system ignores the
+         orientation an app asks for on large screens, such as tablets, unless
+         it's a game. -->
     <application
         android:allowBackup="true"
+        android:appCategory="game"
         android:hardwareAccelerated="true"
         android:icon="${icon}"
         android:label="@string/app_name"
@@ -67,11 +71,15 @@
         <meta-data android:name="SDL_ENV.SDL_ACCELEROMETER_AS_JOYSTICK" android:value="0"/>
          -->
 
+        <!-- enableOnBackInvokedCallback="false": since Android 16, the Back
+             button no longer reaches SDL otherwise, and it's used to return to
+             the app picker. -->
         <activity
             android:name="org.alexmartin.idared32bit.MainActivity"
             android:alwaysRetainTaskState="true"
             android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:exported="true"
+            android:enableOnBackInvokedCallback="false"
             android:launchMode="singleInstance"
             android:preferMinimalPostProcessing="true">
             <intent-filter>

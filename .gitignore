@@ -34,6 +34,11 @@ local.properties
 android/app/src/main/jniLibs
 android/app/build
 android/build
+android/.kotlin
+# Signing keys and their details. Never commit these.
+android/keystore.properties
+*.jks
+*.keystore
 
 # macOS
 

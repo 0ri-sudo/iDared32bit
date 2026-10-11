@@ -8,6 +8,11 @@
  */
 package org.alexmartin.idared32bit;
 
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
+
 import org.libsdl.app.SDLActivity;
 
 /**
@@ -21,5 +26,20 @@ public class MainActivity extends SDLActivity {
             "SDL2",
             "touchHLE"
         };
+    }
+
+    /**
+     * SDL's HIDDeviceManager registers a receiver for its own USB permission
+     * broadcast without saying whether other apps may send to it. Since
+     * Android 14, for apps targeting it, that throws, and the app would crash
+     * at launch. This SDL version predates SDL's own fix, so this does it.
+     */
+    @Override
+    public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            // USB broadcasts come from the system, so it must be exported.
+            return super.registerReceiver(receiver, filter, RECEIVER_EXPORTED);
+        }
+        return super.registerReceiver(receiver, filter);
     }
 }
