@@ -17,7 +17,7 @@ use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::ns_run_loop::run_run_loop_single_iteration;
 use crate::frameworks::foundation::{ns_string, NSUInteger};
 use crate::frameworks::uikit::ui_font::{
-    UITextAlignmentCenter, UITextAlignmentLeft, UITextAlignmentRight,
+    size_with_font, UITextAlignmentCenter, UITextAlignmentLeft, UITextAlignmentRight,
 };
 use crate::frameworks::uikit::ui_graphics::{UIGraphicsPopContext, UIGraphicsPushContext};
 use crate::frameworks::uikit::ui_view::ui_control::ui_button::{
@@ -1157,7 +1157,7 @@ const ICON_SIZE: CGSize = CGSize {
 };
 const LABEL_WIDTH: CGFloat = 74.0;
 /// About two characters wider, used when the neighbouring names leave room.
-const LABEL_MAX_WIDTH: CGFloat = 86.0;
+const LABEL_MAX_WIDTH: CGFloat = 88.0;
 
 struct IconGridStuff {
     page_control: id,
@@ -1450,6 +1450,22 @@ fn update_icon_grid(
         frame.origin.x = (icon_frame.origin.x + (ICON_SIZE.width - width) / 2.0).round();
         frame.size.width = width;
         () = msg![env; label setFrame:frame];
+
+        // Like iOS, end names that still don't fit with an ellipsis.
+        let text: id = msg![env; label text];
+        let font: id = msg![env; label font];
+        let name = ns_string::to_rust_string(env, text);
+        if size_with_font(env, font, &name, None).width > width {
+            let chars: Vec<char> = name.chars().collect();
+            let truncated = (0..chars.len())
+                .rev()
+                .map(|n| format!("{}…", chars[..n].iter().collect::<String>().trim_end()))
+                .find(|t| size_with_font(env, font, t, None).width <= width)
+                .unwrap_or_else(|| "…".to_owned());
+            let truncated = ns_string::from_rust_string(env, truncated);
+            () = msg![env; label setText:truncated];
+            release(env, truncated);
+        }
     }
 }
 
