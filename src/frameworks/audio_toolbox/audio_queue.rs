@@ -739,7 +739,8 @@ pub fn decode_buffer(
 
 /// Ensure an audio queue has an OpenAL source and at least one queued OpenAL
 /// buffer.
-fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<(), ()> {
+/// Returns the number of frames decoded.
+fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<u32, ()> {
     let (state, context) =
         State::get_with_context(&mut env.framework_state, &mut env.openal_manager);
 
@@ -765,6 +766,7 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<(), 
     }
     let al_source = host_object.al_source.unwrap();
 
+    let mut frames_prepared = 0;
     loop {
         let mut al_buffers_queued = 0;
         let mut al_buffers_processed = 0;
@@ -844,8 +846,15 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<(), 
         };
         unsafe { context.SourceQueueBuffers(al_source, 1, &next_al_buffer) };
         assert!(unsafe { context.GetError() } == 0);
+
+        let bytes_per_frame = match al_format {
+            al::AL_FORMAT_MONO8 => 1,
+            al::AL_FORMAT_MONO16 | al::AL_FORMAT_STEREO8 => 2,
+            _ => 4,
+        };
+        frames_prepared += (data.len() / bytes_per_frame) as u32;
     }
-    Ok(())
+    Ok(frames_prepared)
 }
 
 /// The number of frames in an OpenAL buffer.
@@ -1057,8 +1066,11 @@ fn AudioQueuePrime(
     return_if_null!(in_aq);
 
     match prime_audio_queue(env, in_aq) {
-        Ok(_) => {
-            assert!(out_number_of_frames_prepared.is_null()); // TODO
+        Ok(frames_prepared) => {
+            if !out_number_of_frames_prepared.is_null() {
+                env.mem
+                    .write(out_number_of_frames_prepared, frames_prepared);
+            }
             0 // success
         }
         Err(_) => {
