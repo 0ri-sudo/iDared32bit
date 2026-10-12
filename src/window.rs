@@ -2067,6 +2067,10 @@ pub fn open_url(env: &mut Environment, url: &str) -> Result<(), String> {
     env.on_parent_stack_in_coroutine(|_, _| sdl2::url::open_url(url).map_err(|e| e.to_string()))
 }
 
+/// Set when the user picks "Return to App Picker" in the error messagebox.
+pub static RETURN_TO_APP_PICKER_AFTER_ERROR: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Show an SDL messagebox for an error (typically after a panic).
 ///
 /// The window argument allows for passing in the parent window for the
@@ -2078,7 +2082,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
         messagebox::ButtonData {
             flags: messagebox::MessageBoxButtonFlag::NOTHING,
             button_id: 0,
-            text: "Open touchHLE directory",
+            text: "Return to App Picker",
         },
         messagebox::ButtonData {
             flags: messagebox::MessageBoxButtonFlag::NOTHING,
@@ -2102,27 +2106,11 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
         messagebox::ClickedButton::CloseButton => {}
         messagebox::ClickedButton::CustomButton(button) => {
             match button.button_id {
-                // Open data directory (contains log file on android)
-                0 => match crate::paths::url_for_opening_user_data_dir() {
-                    Ok(url) => {
-                        let res = {
-                            #[cfg(target_os = "ios")]
-                            {
-                                open_url_host_ios(&url)
-                            }
-                            #[cfg(not(target_os = "ios"))]
-                            {
-                                sdl2::url::open_url(&url).map_err(|e| e.to_string())
-                            }
-                        };
-                        if let Err(e) = res {
-                            echo!("Couldn't open file manager at {:?}: {}", url, e);
-                        } else {
-                            echo!("Opened file manager at {:?}, exiting.", url);
-                        }
-                    }
-                    Err(e) => echo!("Couldn't open file manager: {}", e),
-                },
+                0 => {
+                    echo!("Returning to app picker.");
+                    RETURN_TO_APP_PICKER_AFTER_ERROR
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 // Close
                 1 => {}
                 _ => unreachable!(),

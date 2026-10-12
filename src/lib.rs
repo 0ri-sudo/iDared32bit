@@ -206,13 +206,26 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     }
 
     loop {
-        if !run_app(
-            bundle_path.clone(),
-            just_info,
-            &option_args,
-            &options,
-            &app_args,
-        )? {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_app(
+                bundle_path.clone(),
+                just_info,
+                &option_args,
+                &options,
+                &app_args,
+            )
+        }));
+        let return_to_app_picker = match res {
+            Ok(res) => res?,
+            Err(e) => {
+                // The crashed app's Environment was dropped while unwinding.
+                if !take_return_to_app_picker_after_error() {
+                    std::panic::resume_unwind(e);
+                }
+                true
+            }
+        };
+        if !return_to_app_picker {
             break Ok(());
         }
 
@@ -411,6 +424,9 @@ fn run_app(
                 if options.popup_errors {
                     window::show_error_messagebox(None, e.as_str());
                 }
+                if take_return_to_app_picker_after_error() {
+                    return Ok(true);
+                }
                 return Err(e);
             }
         },
@@ -429,4 +445,8 @@ fn run_app(
         }
     };
     Ok(env.run())
+}
+
+fn take_return_to_app_picker_after_error() -> bool {
+    window::RETURN_TO_APP_PICKER_AFTER_ERROR.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
