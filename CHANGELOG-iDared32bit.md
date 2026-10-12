@@ -6,7 +6,7 @@ iDared 32bit is based on [touchHLE](https://touchhle.org/). This file lists only
 
 Compatibility:
 
-- Fixed a crash when quitting some apps.
+- Fixed crashes and hangs when quitting some apps.
 
 ## v1.4.0 (2026-10-11)
 

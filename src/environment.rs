@@ -132,6 +132,8 @@ pub struct Environment {
     pub is_app_picker: bool,
     /// Set to [true] to signal a return to the app picker.
     pub return_to_app_picker: bool,
+    /// When an app being quit is given up on, like iOS's watchdog does.
+    pub quit_deadline: Option<Instant>,
     pub dump_file: Option<std::fs::File>,
     yielder: *const Yielder<Environment, Environment>,
     // The amount of ticks to run for Some(value), or single-stepping for None.
@@ -712,6 +714,7 @@ impl Environment {
             env_vars: Default::default(),
             is_app_picker: false,
             return_to_app_picker: false,
+            quit_deadline: None,
             dump_file: None,
             yielder: std::ptr::null(),
             remaining_ticks: None,
@@ -857,6 +860,7 @@ impl Environment {
             env_vars: Default::default(),
             is_app_picker: true,
             return_to_app_picker: false,
+            quit_deadline: None,
             dump_file: None,
             yielder: std::ptr::null(),
             remaining_ticks: None,
@@ -917,6 +921,7 @@ impl Environment {
             env_vars: HashMap::new(),
             is_app_picker: true,
             return_to_app_picker: false,
+            quit_deadline: None,
             dump_file: None,
             yielder: std::ptr::null(),
             remaining_ticks: None,
@@ -1498,6 +1503,13 @@ impl Environment {
                 w.on_main_stack = true;
             }
 
+            if self
+                .quit_deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                echo!("App took too long to quit, returning to app picker anyway.");
+                self.return_to_app_picker = true;
+            }
             if self.return_to_app_picker {
                 // Put the context back so it's freed when Environment drops.
                 let thread = self.threads.get_mut(self.current_thread).unwrap();
@@ -1683,6 +1695,7 @@ impl Environment {
             dump_file: None,
             is_app_picker: false,
             return_to_app_picker: false,
+            quit_deadline: None,
             yielder: std::ptr::null(),
             remaining_ticks: None,
             panic_cell: Rc::new(Cell::new(None)),

@@ -10,7 +10,7 @@
 //! will probably take a lot of shortcuts.
 
 use crate::{msg, Environment};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub mod ui_accelerometer;
 pub mod ui_activity_indicator_view;
@@ -159,6 +159,8 @@ pub fn handle_events(env: &mut Environment) -> Option<Instant> {
                 if !env.return_to_app_picker {
                     log!("Handling HomeButton event: returning to app picker.");
                     if !env.is_app_picker {
+                        // iOS kills apps that take more than a few seconds.
+                        env.quit_deadline = Some(Instant::now() + Duration::from_secs(5));
                         // Some apps crash if they're quit while loading, as
                         // they would on a device. They're quitting anyway.
                         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
