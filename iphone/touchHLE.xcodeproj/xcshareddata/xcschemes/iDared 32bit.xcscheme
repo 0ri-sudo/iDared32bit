@@ -17,6 +17,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "E3A46EC22DD1A44100619FED"
                BuildableName = "iDared 32bit.app"
+               BlueprintName = "iDared 32bit"
                ReferencedContainer = "container:touchHLE.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -46,6 +47,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E3A46EC22DD1A44100619FED"
             BuildableName = "iDared 32bit.app"
+            BlueprintName = "iDared 32bit"
             ReferencedContainer = "container:touchHLE.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -62,6 +64,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E3A46EC22DD1A44100619FED"
             BuildableName = "iDared 32bit.app"
+            BlueprintName = "iDared 32bit"
             ReferencedContainer = "container:touchHLE.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
