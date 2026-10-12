@@ -395,10 +395,10 @@ pub fn AudioFileReadBytes(
 }
 
 #[repr(C, packed)]
-struct AudioStreamPacketDescription {
+pub(super) struct AudioStreamPacketDescription {
     start_offset: i64,
     variable_frames_in_packet: u32,
-    data_byte_size: u32,
+    pub(super) data_byte_size: u32,
 }
 unsafe impl SafeRead for AudioStreamPacketDescription {}
 

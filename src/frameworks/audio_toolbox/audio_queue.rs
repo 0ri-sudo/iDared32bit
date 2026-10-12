@@ -8,6 +8,7 @@
 //! The audio playback here is mapped onto OpenAL Soft for convenience.
 //! Apple's implementation probably uses Core Audio instead.
 
+use super::audio_file::AudioStreamPacketDescription;
 use crate::abi::{CallFromHost, GuestFunction};
 use crate::audio::openal as al;
 use crate::audio::openal::al_types::*;
@@ -84,6 +85,8 @@ struct AudioQueueHostObject {
     /// For MP3 the app streams itself, rather than from a file touchHLE has
     /// already decoded.
     mp3_decoder: Option<Mp3StreamDecoder>,
+    /// The sizes of the packets in each enqueued buffer, if the app gave them.
+    packet_sizes: HashMap<AudioQueueBufferRef, Vec<u32>>,
 }
 
 /// Track whether the audio queue is meant to be running, in order to handle
@@ -216,6 +219,7 @@ pub fn AudioQueueNewOutput(
         frames_played: 0,
         started: false,
         mp3_decoder: None,
+        packet_sizes: HashMap::new(),
     };
 
     let aq_ref = env.mem.alloc_and_write(OpaqueAudioQueue { _filler: 0 });
@@ -376,14 +380,20 @@ pub fn AudioQueueEnqueueBuffer(
     env: &mut Environment,
     in_aq: AudioQueueRef,
     in_buffer: AudioQueueBufferRef,
-    _in_num_packet_descs: u32,
-    _in_packet_descs: MutVoidPtr,
+    in_num_packet_descs: u32,
+    in_packet_descs: MutVoidPtr,
 ) -> OSStatus {
     return_if_null!(in_aq);
 
-    // Variable packet size unimplemented (no formats supported that need it).
-    // We don't assert the count is 0 because we might get a useless one even
-    // for formats that don't need it.
+    // Only used to tell compressed data apart from touchHLE's decoded PCM.
+    let descs: ConstPtr<AudioStreamPacketDescription> = in_packet_descs.cast_const().cast();
+    let packet_sizes: Vec<u32> = if descs.is_null() {
+        Vec::new()
+    } else {
+        (0..in_num_packet_descs)
+            .map(|i| env.mem.read(descs + i).data_byte_size)
+            .collect()
+    };
 
     let host_object = State::get(&mut env.framework_state)
         .audio_queues
@@ -395,6 +405,7 @@ pub fn AudioQueueEnqueueBuffer(
     }
 
     host_object.buffer_queue.push_back(in_buffer);
+    host_object.packet_sizes.insert(in_buffer, packet_sizes);
     log_dbg!("New buffer enqueued: {:?}", in_buffer);
 
     0 // success
@@ -828,12 +839,37 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<u32,
                 sample_rate as ALsizei,
                 pcm,
             ),
-            None => decode_buffer(
-                &env.mem,
+            None => match undecodable_packets(
                 &host_object.format,
-                next_buffer.audio_data.cast(),
-                next_buffer.audio_data_byte_size,
-            ),
+                host_object
+                    .packet_sizes
+                    .get(&next_buffer_ref)
+                    .map_or(&[][..], Vec::as_slice),
+            ) {
+                // Silence, as before AAC and ALAC were supported, rather than
+                // static.
+                Some(packets) => (
+                    if host_object.format.channels_per_frame == 1 {
+                        al::AL_FORMAT_MONO16
+                    } else {
+                        al::AL_FORMAT_STEREO16
+                    },
+                    host_object.format.sample_rate as ALsizei,
+                    vec![
+                        0;
+                        packets
+                            * host_object.format.frames_per_packet as usize
+                            * host_object.format.channels_per_frame as usize
+                            * 2
+                    ],
+                ),
+                None => decode_buffer(
+                    &env.mem,
+                    &host_object.format,
+                    next_buffer.audio_data.cast(),
+                    next_buffer.audio_data_byte_size,
+                ),
+            },
         };
         unsafe {
             context.BufferData(
@@ -855,6 +891,27 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<u32,
         frames_prepared += (data.len() / bytes_per_frame) as u32;
     }
     Ok(frames_prepared)
+}
+
+/// For AAC and ALAC, the number of packets in a buffer of compressed data the
+/// app parsed itself, which can't be decoded yet, or [None] if the buffer is
+/// from a file touchHLE has already decoded, whose packets are all full-size
+/// 16-bit PCM except maybe the last.
+fn undecodable_packets(
+    format: &AudioStreamBasicDescription,
+    packet_sizes: &[u32],
+) -> Option<usize> {
+    if !matches!(
+        format.format_id,
+        kAudioFormatMPEG4AAC | kAudioFormatAppleLossless
+    ) {
+        return None;
+    }
+    let decoded_size = format.frames_per_packet * format.channels_per_frame * 2;
+    match packet_sizes.first() {
+        Some(&size) if size != decoded_size => Some(packet_sizes.len()),
+        _ => None,
+    }
 }
 
 /// The number of frames in an OpenAL buffer.
