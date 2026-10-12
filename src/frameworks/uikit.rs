@@ -164,7 +164,11 @@ pub fn handle_events(env: &mut Environment) -> Option<Instant> {
                         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             ui_application::notify_will_terminate(env)
                         }));
-                        if res.is_err() {
+                        if let Err(e) = res {
+                            // exit() unwinds the app to return to the picker.
+                            if env.return_to_app_picker {
+                                std::panic::resume_unwind(e);
+                            }
                             log!("App crashed while quitting, returning to app picker anyway.");
                         }
                     }

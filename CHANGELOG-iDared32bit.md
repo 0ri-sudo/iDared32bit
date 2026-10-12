@@ -2,6 +2,12 @@
 
 iDared 32bit is based on [touchHLE](https://touchhle.org/). This file lists only iDared 32bit's own changes. The touchHLE changes it includes are in [CHANGELOG.md](CHANGELOG.md), which is touchHLE's own changelog, kept exactly as it is upstream.
 
+## NEXT
+
+Compatibility:
+
+- Fixed a crash when quitting some apps.
+
 ## v1.4.0 (2026-10-11)
 
 Compatibility:
