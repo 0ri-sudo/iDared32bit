@@ -55,7 +55,10 @@ fn mmap(
         env.mem.vm_alloc(None, len).unwrap()
     } else {
         match env.mem.vm_alloc(Some(addr.to_bits()), len) {
-            Err(VMAllocError::AddressUnavailable) if flags & MAP_FIXED == 0 => {
+            // The hint may also be free but too small for len.
+            Err(VMAllocError::AddressUnavailable | VMAllocError::NoSpace)
+                if flags & MAP_FIXED == 0 =>
+            {
                 let ptr = env.mem.vm_alloc(None, len).unwrap();
                 log!("Warning: mmap could not allocate at hint {addr:?}, allocated at {ptr:?}",);
                 ptr
