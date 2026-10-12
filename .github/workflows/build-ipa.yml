@@ -1,4 +1,4 @@
-name: Build Unsigned IPA
+name: Build iDared 32bit IPA
 
 on:
   workflow_dispatch:
@@ -10,71 +10,56 @@ jobs:
   build:
     runs-on: macos-14
 
-    env:
-      IPHONEOS_DEPLOYMENT_TARGET: "15.0"
-      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-      CMAKE_POLICY_DEFAULT_CMP0077: "NEW"
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
 
-      - name: Configure iOS Linker & Fix Builtins
+      - name: Build iOS App with Xcode
         run: |
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "Using iPhoneOS SDK: $SDK_PATH"
-
-          # Provide dummy ___chkstk_darwin archive
-          echo "void ___chkstk_darwin(void) {}" > chkstk.c
-          xcrun --sdk iphoneos clang -c chkstk.c -target arm64-apple-ios15.0 -isysroot "$SDK_PATH" -o chkstk.o
-          ar rcs "$RUNNER_TEMP/libchkstk.a" chkstk.o
-
-          # Find Apple's Clang runtime
-          CLANG_RT=$(find "$(xcode-select -p)" -name "libclang_rt.builtins_ios.a" | head -n 1)
-
-          RUST_LINK_FLAGS="-C link-arg=-isysroot -C link-arg=$SDK_PATH -C link-arg=-target -C link-arg=arm64-apple-ios15.0 -C link-arg=-Wl,-headerpad_max_install_names -C link-arg=$RUNNER_TEMP/libchkstk.a"
-          if [ -n "$CLANG_RT" ]; then
-            RUST_LINK_FLAGS="$RUST_LINK_FLAGS -C link-arg=$CLANG_RT"
-          fi
-
-          echo "CARGO_TARGET_AARCH64_APPLE_IOS_RUSTFLAGS=$RUST_LINK_FLAGS" >> $GITHUB_ENV
-
-      - name: Compile Project
-        run: |
-          cargo build --release --target aarch64-apple-ios
+          # Compiler l'application iOS complète via le projet Xcode natif.
+          # Cela compile automatiquement touchHLE (Rust) via sa règle de build,
+          # l'interface SwiftUI (AppPicker.swift), le wrapper UIKit (SDL_uikit_main.c)
+          # et intègre toutes les ressources requises (polices, dylibs, assets).
+          xcodebuild build \
+            -project iphone/touchHLE.xcodeproj \
+            -scheme "iDared 32bit" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO
 
       - name: Package .ipa
         run: |
-          mkdir -p Payload/iDared32bit.app
+          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Erreur : bundle .app introuvable !"
+            find build -name "*.app"
+            exit 1
+          fi
+          echo "Application trouvée : $APP_PATH"
 
-          BIN_PATH=$(find target/aarch64-apple-ios/release -maxdepth 2 -type f -perm +111 -name "touchHLE*" | grep -v "\.dSYM" | head -n 1)
-          if [ -z "$BIN_PATH" ]; then
-            BIN_PATH=$(find target/aarch64-apple-ios/release -name "*.dylib" | head -n 1)
+          # Signature ad-hoc avec les entitlements (indispensable pour LiveContainer, TrollStore et AltStore)
+          if [ -f "iphone/touchHLE/touchHLE.entitlements" ]; then
+            codesign --force --deep --sign - --entitlements "iphone/touchHLE/touchHLE.entitlements" "$APP_PATH"
+          else
+            codesign --force --deep --sign - "$APP_PATH"
           fi
 
-          echo "Using binary: $BIN_PATH"
-          cp "$BIN_PATH" Payload/iDared32bit.app/touchHLE
-          chmod +x Payload/iDared32bit.app/touchHLE
-
-          # Use existing project Info.plist
-          PLIST=$(find . -name "Info.plist" -not -path "*/Payload/*" | head -n 1)
-          if [ -n "$PLIST" ]; then
-            echo "Copying plist from $PLIST"
-            cp "$PLIST" Payload/iDared32bit.app/Info.plist
-          fi
-
-          if [ -d "touchHLE_default_resources" ]; then
-            cp -r touchHLE_default_resources Payload/iDared32bit.app/
-          fi
-
-          zip -r iDared32bit.ipa Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r -9 iDared32bit.ipa Payload
           rm -rf Payload
 
       - name: Upload IPA Artifact
