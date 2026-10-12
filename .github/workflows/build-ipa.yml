@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Check out repository
@@ -17,6 +17,15 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Select Xcode 16
+        run: |
+          XCODE_16=$(find /Applications -maxdepth 1 -name "Xcode_16*.app" | sort -V | tail -n 1)
+          if [ -n "$XCODE_16" ]; then
+            echo "Selecting $XCODE_16"
+            sudo xcode-select -s "$XCODE_16/Contents/Developer"
+          fi
+          xcodebuild -version
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -24,10 +33,6 @@ jobs:
 
       - name: Build iOS App with Xcode
         run: |
-          # Compiler l'application iOS complète via le projet Xcode natif.
-          # Cela compile automatiquement touchHLE (Rust) via sa règle de build,
-          # l'interface SwiftUI (AppPicker.swift), le wrapper UIKit (SDL_uikit_main.c)
-          # et intègre toutes les ressources requises (polices, dylibs, assets).
           xcodebuild build \
             -project iphone/touchHLE.xcodeproj \
             -scheme "iDared 32bit" \
@@ -50,7 +55,7 @@ jobs:
           fi
           echo "Application trouvée : $APP_PATH"
 
-          # Signature ad-hoc avec les entitlements (indispensable pour LiveContainer, TrollStore et AltStore)
+          # Signature ad-hoc (nécessaire pour LiveContainer, TrollStore, AltStore)
           if [ -f "iphone/touchHLE/touchHLE.entitlements" ]; then
             codesign --force --deep --sign - --entitlements "iphone/touchHLE/touchHLE.entitlements" "$APP_PATH"
           else
