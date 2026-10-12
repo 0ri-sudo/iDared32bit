@@ -31,19 +31,51 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
+      - name: Configure iOS Linker & Fix Builtins
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "Using iPhoneOS SDK: $SDK_PATH"
+
+          # Création du stub ___chkstk_darwin requis pour le runtime Rust sur iOS
+          echo "void ___chkstk_darwin(void) {}" > chkstk.c
+          xcrun --sdk iphoneos clang -c chkstk.c -target arm64-apple-ios16.0 -isysroot "$SDK_PATH" -o chkstk.o
+          ar rcs "$RUNNER_TEMP/libchkstk.a" chkstk.o
+
+          # Détection du runtime Clang Apple
+          CLANG_RT=$(find "$(xcode-select -p)" -name "libclang_rt.builtins_ios.a" | head -n 1)
+
+          RUST_LINK_FLAGS="-C link-arg=-isysroot -C link-arg=$SDK_PATH -C link-arg=-target -C link-arg=arm64-apple-ios16.0 -C link-arg=-Wl,-headerpad_max_install_names -C link-arg=$RUNNER_TEMP/libchkstk.a"
+          if [ -n "$CLANG_RT" ]; then
+            RUST_LINK_FLAGS="$RUST_LINK_FLAGS -C link-arg=$CLANG_RT"
+          fi
+
+          echo "CARGO_TARGET_AARCH64_APPLE_IOS_RUSTFLAGS=$RUST_LINK_FLAGS" >> $GITHUB_ENV
+
+      - name: Precompile Rust Library
+        run: |
+          # Précompilation de la bibliothèque Rust pour valider les dépendances et alimenter le cache
+          cargo build --release --target aarch64-apple-ios --lib
+
       - name: Build iOS App with Xcode
         run: |
+          set -o pipefail
+          # Désactivation du code signing automatique imposé par Xcode (pour autoriser l'absence de compte développeur)
           xcodebuild build \
             -project iphone/touchHLE.xcodeproj \
             -scheme "iDared 32bit" \
             -configuration Release \
-            -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            CODE_SIGN_STYLE=Manual \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            ENABLE_USER_SCRIPT_SANDBOXING=NO
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO 2>&1 | tee xcodebuild.log || {
+              echo "::error::Échec de la compilation Xcode. Affichage des erreurs détectées :"
+              grep -E "(error:|fatal error:|\*\* BUILD FAILED \*\*)" xcodebuild.log -B 2 -A 5 || tail -n 80 xcodebuild.log
+              exit 1
+            }
 
       - name: Package .ipa
         run: |
