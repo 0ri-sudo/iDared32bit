@@ -1,0 +1,130 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      CMAKE_POLICY_DEFAULT_CMP0077: "NEW"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Configure iOS Linker & Fix Clang Builtins
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "Using iPhoneOS SDK: $SDK_PATH"
+
+          # 1. Create a fallback stub archive for ___chkstk_darwin in case Clang RT is stripped
+          cat << 'EOF' > chkstk.c
+          void ___chkstk_darwin(void) {}
+          EOF
+          xcrun --sdk iphoneos clang -c chkstk.c -target arm64-apple-ios15.0 -isysroot "$SDK_PATH" -o chkstk.o
+          ar rcs "$RUNNER_TEMP/libchkstk.a" chkstk.o
+
+          # 2. Find Apple's official Clang runtime library
+          CLANG_RT=$(find "$(xcode-select -p)" -name "libclang_rt.builtins_ios.a" | head -n 1)
+          if [ -z "$CLANG_RT" ]; then
+            CLANG_RT=$(find "$(xcode-select -p)" -name "*clang_rt*ios*.a" | grep -v "simulator" | head -n 1)
+          fi
+          echo "Found Clang runtime: $CLANG_RT"
+
+          # 3. Assemble Rust linker arguments
+          RUST_LINK_FLAGS="-C link-arg=-isysroot -C link-arg=$SDK_PATH -C link-arg=-target -C link-arg=arm64-apple-ios15.0 -C link-arg=-Wl,-headerpad_max_install_names"
+          if [ -n "$CLANG_RT" ]; then
+            RUST_LINK_FLAGS="$RUST_LINK_FLAGS -C link-arg=$CLANG_RT"
+          fi
+          RUST_LINK_FLAGS="$RUST_LINK_FLAGS -C link-arg=$RUNNER_TEMP/libchkstk.a"
+
+          echo "CARGO_TARGET_AARCH64_APPLE_IOS_RUSTFLAGS=$RUST_LINK_FLAGS" >> $GITHUB_ENV
+
+      - name: Compile Project
+        run: |
+          cargo build --release --target aarch64-apple-ios
+
+      - name: Package .ipa
+        run: |
+          mkdir -p Payload/iDared32bit.app
+
+          # Locate compiled binary
+          BIN_PATH=$(find target/aarch64-apple-ios/release -maxdepth 2 -type f -perm +111 -name "touchHLE*" | grep -v "\.dSYM" | head -n 1)
+          if [ -z "$BIN_PATH" ]; then
+            echo "Error: Binary not found!"
+            exit 1
+          fi
+
+          echo "Found binary at: $BIN_PATH"
+          cp "$BIN_PATH" Payload/iDared32bit.app/touchHLE
+          chmod +x Payload/iDared32bit.app/touchHLE
+
+          # Locate existing Info.plist or generate one
+          PLIST=$(find . -name "Info.plist" | head -n 1)
+          if [ -n "$PLIST" ]; then
+            echo "Using existing Info.plist from $PLIST"
+            cp "$PLIST" Payload/iDared32bit.app/Info.plist
+          else
+            echo "Generating Info.plist"
+            cat << 'EOF' > Payload/iDared32bit.app/Info.plist
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>touchHLE</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.idared.touchHLE</string>
+    <key>CFBundleName</key>
+    <string>iDared32bit</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+        <integer>2</integer>
+    </array>
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>arm64</string>
+    </array>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+</dict>
+EOF
+          fi
+
+          # Copy app assets or default bundled resources if present
+          if [ -d "touchHLE_default_resources" ]; then
+            cp -r touchHLE_default_resources Payload/iDared32bit.app/
+          fi
+
+          zip -r iDared32bit.ipa Payload
+          rm -rf Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iDared32bit-ipa
+          path: iDared32bit.ipa
