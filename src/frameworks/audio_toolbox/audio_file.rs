@@ -396,7 +396,7 @@ pub fn AudioFileReadBytes(
 
 #[repr(C, packed)]
 pub(super) struct AudioStreamPacketDescription {
-    start_offset: i64,
+    pub(super) start_offset: i64,
     variable_frames_in_packet: u32,
     pub(super) data_byte_size: u32,
 }

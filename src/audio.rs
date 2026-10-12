@@ -16,7 +16,7 @@ mod ima4;
 pub mod openal;
 mod symphonia_formats;
 
-pub use symphonia_formats::Mp3StreamDecoder;
+pub use symphonia_formats::{Mp3StreamDecoder, PacketStreamDecoder};
 
 pub use ima4::decode_ima4;
 

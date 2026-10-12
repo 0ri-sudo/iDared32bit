@@ -13,7 +13,7 @@ use crate::abi::{CallFromHost, GuestFunction};
 use crate::audio::openal as al;
 use crate::audio::openal::al_types::*;
 use crate::audio::openal::{OpenAL, OpenALManager};
-use crate::audio::{decode_ima4, Mp3StreamDecoder};
+use crate::audio::{decode_ima4, Mp3StreamDecoder, PacketStreamDecoder};
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::frameworks::carbon_core::OSStatus;
 use crate::frameworks::core_audio_types::{
@@ -85,8 +85,13 @@ struct AudioQueueHostObject {
     /// For MP3 the app streams itself, rather than from a file touchHLE has
     /// already decoded.
     mp3_decoder: Option<Mp3StreamDecoder>,
-    /// The sizes of the packets in each enqueued buffer, if the app gave them.
-    packet_sizes: HashMap<AudioQueueBufferRef, Vec<u32>>,
+    /// The offsets and sizes of the packets in each enqueued buffer, if the
+    /// app gave them.
+    packets: HashMap<AudioQueueBufferRef, Vec<(u64, u32)>>,
+    magic_cookie: Option<Vec<u8>>,
+    /// For AAC and ALAC the app streams itself. [None] if not tried yet,
+    /// `Some(None)` if the format couldn't be decoded.
+    packet_decoder: Option<Option<PacketStreamDecoder>>,
 }
 
 /// Track whether the audio queue is meant to be running, in order to handle
@@ -142,6 +147,7 @@ type AudioQueueParameterValue = f32;
 
 pub type AudioQueuePropertyID = u32;
 pub const kAudioQueueProperty_IsRunning: AudioQueuePropertyID = fourcc(b"aqrn");
+const kAudioQueueProperty_MagicCookie: AudioQueuePropertyID = fourcc(b"aqmc");
 
 /// (*void)(void *in_user_data, AudioQueueRef in_aq, AudioQueuePropertyID in_id)
 type AudioQueuePropertyListenerProc = GuestFunction;
@@ -219,7 +225,9 @@ pub fn AudioQueueNewOutput(
         frames_played: 0,
         started: false,
         mp3_decoder: None,
-        packet_sizes: HashMap::new(),
+        packets: HashMap::new(),
+        magic_cookie: None,
+        packet_decoder: None,
     };
 
     let aq_ref = env.mem.alloc_and_write(OpaqueAudioQueue { _filler: 0 });
@@ -385,13 +393,17 @@ pub fn AudioQueueEnqueueBuffer(
 ) -> OSStatus {
     return_if_null!(in_aq);
 
-    // Only used to tell compressed data apart from touchHLE's decoded PCM.
+    // Only used for compressed data the app parsed itself.
     let descs: ConstPtr<AudioStreamPacketDescription> = in_packet_descs.cast_const().cast();
-    let packet_sizes: Vec<u32> = if descs.is_null() {
+    let packets: Vec<(u64, u32)> = if descs.is_null() {
         Vec::new()
     } else {
         (0..in_num_packet_descs)
-            .map(|i| env.mem.read(descs + i).data_byte_size)
+            .map(|i| {
+                let desc = env.mem.read(descs + i);
+                let start = u64::try_from(desc.start_offset).unwrap_or(u64::MAX);
+                (start, desc.data_byte_size)
+            })
             .collect()
     };
 
@@ -405,7 +417,7 @@ pub fn AudioQueueEnqueueBuffer(
     }
 
     host_object.buffer_queue.push_back(in_buffer);
-    host_object.packet_sizes.insert(in_buffer, packet_sizes);
+    host_object.packets.insert(in_buffer, packets);
     log_dbg!("New buffer enqueued: {:?}", in_buffer);
 
     0 // success
@@ -538,18 +550,34 @@ fn AudioQueueGetProperty(
 }
 
 fn AudioQueueSetProperty(
-    _env: &mut Environment,
+    env: &mut Environment,
     in_aq: AudioQueueRef,
     in_property_id: AudioQueuePropertyID,
     in_property_data: ConstVoidPtr,
-    io_data_size: MutPtr<u32>,
+    in_data_size: u32,
 ) -> OSStatus {
+    return_if_null!(in_aq);
+
+    if in_property_id == kAudioQueueProperty_MagicCookie && !in_property_data.is_null() {
+        let cookie = env
+            .mem
+            .bytes_at(in_property_data.cast(), in_data_size)
+            .to_vec();
+        let host_object = State::get(&mut env.framework_state)
+            .audio_queues
+            .get_mut(&in_aq)
+            .unwrap();
+        host_object.magic_cookie = Some(cookie);
+        host_object.packet_decoder = None;
+        return 0; // success
+    }
+
     log!(
-        "TODO: AudioQueueSetProperty({:?}, {}, {:?}, {:?}) -> kAudioQueueErr_InvalidDevice",
+        "TODO: AudioQueueSetProperty({:?}, {}, {:?}, {}) -> kAudioQueueErr_InvalidDevice",
         in_aq,
         debug_fourcc(in_property_id),
         in_property_data,
-        io_data_size
+        in_data_size
     );
 
     // Error value shouldn't matter that much,
@@ -839,37 +867,27 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<u32,
                 sample_rate as ALsizei,
                 pcm,
             ),
-            None => match undecodable_packets(
-                &host_object.format,
-                host_object
-                    .packet_sizes
+            None => {
+                let packets = host_object
+                    .packets
                     .get(&next_buffer_ref)
-                    .map_or(&[][..], Vec::as_slice),
-            ) {
-                // Silence, as before AAC and ALAC were supported, rather than
-                // static.
-                Some(packets) => (
-                    if host_object.format.channels_per_frame == 1 {
-                        al::AL_FORMAT_MONO16
-                    } else {
-                        al::AL_FORMAT_STEREO16
-                    },
-                    host_object.format.sample_rate as ALsizei,
-                    vec![
-                        0;
-                        packets
-                            * host_object.format.frames_per_packet as usize
-                            * host_object.format.channels_per_frame as usize
-                            * 2
-                    ],
-                ),
-                None => decode_buffer(
-                    &env.mem,
-                    &host_object.format,
-                    next_buffer.audio_data.cast(),
-                    next_buffer.audio_data_byte_size,
-                ),
-            },
+                    .cloned()
+                    .unwrap_or_default();
+                if is_app_compressed(&host_object.format, &packets) {
+                    let data = env.mem.bytes_at(
+                        next_buffer.audio_data.cast(),
+                        next_buffer.audio_data_byte_size,
+                    );
+                    decode_app_packets(host_object, data, &packets)
+                } else {
+                    decode_buffer(
+                        &env.mem,
+                        &host_object.format,
+                        next_buffer.audio_data.cast(),
+                        next_buffer.audio_data_byte_size,
+                    )
+                }
+            }
         };
         unsafe {
             context.BufferData(
@@ -893,25 +911,76 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<u32,
     Ok(frames_prepared)
 }
 
-/// For AAC and ALAC, the number of packets in a buffer of compressed data the
-/// app parsed itself, which can't be decoded yet, or [None] if the buffer is
-/// from a file touchHLE has already decoded, whose packets are all full-size
-/// 16-bit PCM except maybe the last.
-fn undecodable_packets(
-    format: &AudioStreamBasicDescription,
-    packet_sizes: &[u32],
-) -> Option<usize> {
+/// Whether an AAC or ALAC buffer is compressed data the app parsed itself,
+/// rather than from a file touchHLE has already decoded, whose packets are
+/// all full-size 16-bit PCM except maybe the last.
+fn is_app_compressed(format: &AudioStreamBasicDescription, packets: &[(u64, u32)]) -> bool {
     if !matches!(
         format.format_id,
         kAudioFormatMPEG4AAC | kAudioFormatAppleLossless
     ) {
-        return None;
+        return false;
     }
     let decoded_size = format.frames_per_packet * format.channels_per_frame * 2;
-    match packet_sizes.first() {
-        Some(&size) if size != decoded_size => Some(packet_sizes.len()),
-        _ => None,
-    }
+    packets
+        .first()
+        .is_some_and(|&(_, size)| size != decoded_size)
+}
+
+/// Decodes AAC or ALAC the app parsed itself, or makes silence of the same
+/// length if it can't, e.g. for HE-AAC.
+fn decode_app_packets(
+    host_object: &mut AudioQueueHostObject,
+    data: &[u8],
+    packets: &[(u64, u32)],
+) -> (ALenum, ALsizei, Vec<u8>) {
+    let format = &host_object.format;
+    let sample_rate = format.sample_rate as u32;
+    let channels = format.channels_per_frame;
+    let is_aac = format.format_id == kAudioFormatMPEG4AAC;
+    let frames_per_packet = match format.frames_per_packet {
+        0 if is_aac => 1024,
+        0 => 4096,
+        frames => frames,
+    };
+    // kAppleLosslessFormatFlag_16BitSourceData etc.
+    let bit_depth = match format.format_flags {
+        2 => 20,
+        3 => 24,
+        4 => 32,
+        _ => 16,
+    };
+    let cookie = host_object.magic_cookie.as_deref();
+    let decoder = host_object.packet_decoder.get_or_insert_with(|| {
+        let decoder = if is_aac {
+            PacketStreamDecoder::new_aac(sample_rate, channels, cookie)
+        } else {
+            PacketStreamDecoder::new_alac(
+                sample_rate,
+                channels,
+                bit_depth,
+                frames_per_packet,
+                cookie,
+            )
+        };
+        if decoder.is_none() {
+            log!("Warning: can't decode this audio queue's format, it will be silent.");
+        }
+        decoder
+    });
+    let (pcm, sample_rate, channels) = decoder
+        .as_mut()
+        .and_then(|decoder| decoder.decode(data, packets))
+        .unwrap_or_else(|| {
+            let len = packets.len() * frames_per_packet as usize * channels as usize * 2;
+            (vec![0; len], sample_rate, channels)
+        });
+    let al_format = if channels == 1 {
+        al::AL_FORMAT_MONO16
+    } else {
+        al::AL_FORMAT_STEREO16
+    };
+    (al_format, sample_rate as ALsizei, pcm)
 }
 
 /// The number of frames in an OpenAL buffer.
@@ -1304,6 +1373,9 @@ fn AudioQueueReset(env: &mut Environment, in_aq: AudioQueueRef) -> OSStatus {
     host_object.buffer_queue.clear();
     host_object.frames_played = 0;
     if let Some(decoder) = &mut host_object.mp3_decoder {
+        decoder.reset();
+    }
+    if let Some(Some(decoder)) = &mut host_object.packet_decoder {
         decoder.reset();
     }
 

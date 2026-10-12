@@ -10,7 +10,7 @@
 //! feature list in Cargo.toml).
 
 use std::io::Cursor;
-use symphonia::core::audio::AudioSpec;
+use symphonia::core::audio::{AudioSpec, Channels, Position};
 use symphonia::core::codecs::audio::well_known::{
     CODEC_ID_AAC, CODEC_ID_ADPCM_IMA_QT, CODEC_ID_ADPCM_IMA_WAV, CODEC_ID_ALAC, CODEC_ID_MP3,
     CODEC_ID_PCM_S16LE,
@@ -178,6 +178,152 @@ impl Mp3StreamDecoder {
         }
         Some((out_pcm, sample_rate, channels))
     }
+}
+
+/// Decodes AAC or ALAC packets that an app parses itself and streams through
+/// an audio queue.
+pub struct PacketStreamDecoder(Box<dyn AudioDecoder>);
+
+impl PacketStreamDecoder {
+    /// AAC-LC, configured by the magic cookie if there is one.
+    pub fn new_aac(sample_rate: u32, channels: u32, cookie: Option<&[u8]>) -> Option<Self> {
+        let mut params = AudioCodecParameters::new();
+        params.for_codec(CODEC_ID_AAC).with_sample_rate(sample_rate);
+        params.with_channels(if channels == 1 {
+            Channels::Positioned(Position::FRONT_CENTER)
+        } else {
+            Channels::Positioned(Position::FRONT_LEFT | Position::FRONT_RIGHT)
+        });
+        if let Some(config) = cookie.and_then(audio_specific_config) {
+            params.with_extra_data(config.into());
+        }
+        Self::with_params(&params)
+    }
+
+    /// ALAC, configured by the magic cookie, or Apple's usual settings if
+    /// there isn't one.
+    pub fn new_alac(
+        sample_rate: u32,
+        channels: u32,
+        bit_depth: u8,
+        frames_per_packet: u32,
+        cookie: Option<&[u8]>,
+    ) -> Option<Self> {
+        let config = match cookie {
+            Some(cookie) => alac_specific_config(cookie)?.to_vec(),
+            None => {
+                let mut config = frames_per_packet.to_be_bytes().to_vec();
+                // Version, bit depth, pb, mb, kb, channels, max run.
+                config.extend_from_slice(&[0, bit_depth, 40, 10, 14, channels as u8, 0, 255]);
+                // Max frame bytes and average bit rate: unknown.
+                config.extend_from_slice(&[0; 8]);
+                config.extend_from_slice(&sample_rate.to_be_bytes());
+                config
+            }
+        };
+        let mut params = AudioCodecParameters::new();
+        params
+            .for_codec(CODEC_ID_ALAC)
+            .with_extra_data(config.into());
+        Self::with_params(&params)
+    }
+
+    fn with_params(params: &AudioCodecParameters) -> Option<Self> {
+        let decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(params, &Default::default())
+            .ok()?;
+        Some(PacketStreamDecoder(decoder))
+    }
+
+    /// For when the app jumps to another part of the stream.
+    pub fn reset(&mut self) {
+        self.0.reset();
+    }
+
+    /// Decodes the `packets` (offsets and sizes) in `data` to 16-bit PCM,
+    /// returning it with its sample rate and channel count, or [None] if no
+    /// packet could be decoded.
+    pub fn decode(&mut self, data: &[u8], packets: &[(u64, u32)]) -> Option<(Vec<u8>, u32, u32)> {
+        let mut out_pcm = Vec::new();
+        let mut tmp_raw_s16_buf = Vec::new();
+        let mut spec = None;
+        for &(offset, size) in packets {
+            let Some(bytes) = usize::try_from(offset)
+                .ok()
+                .and_then(|start| data.get(start..start.checked_add(size as usize)?))
+            else {
+                continue;
+            };
+            let packet = Packet::new(0, Timestamp::ZERO, Duration::ZERO, bytes);
+            // A bad packet is skipped, as a device would.
+            if let Ok(decoded) = self.0.decode(&packet) {
+                spec.get_or_insert((decoded.spec().rate(), decoded.spec().channels().count()));
+                tmp_raw_s16_buf.clear();
+                decoded.copy_bytes_to_vec_interleaved_as::<i16>(&mut tmp_raw_s16_buf);
+                out_pcm.extend_from_slice(&tmp_raw_s16_buf);
+            }
+        }
+        let (sample_rate, channels) = spec?;
+        Some((out_pcm, sample_rate, channels.try_into().unwrap()))
+    }
+}
+
+/// The AudioSpecificConfig in an AAC magic cookie, which on iOS is an MPEG-4
+/// ES descriptor, maybe in an `esds` atom.
+fn audio_specific_config(cookie: &[u8]) -> Option<&[u8]> {
+    let mut rest = match cookie.windows(4).position(|w| w == b"esds") {
+        // Skip the atom's name, version and flags.
+        Some(at) => cookie.get(at + 8..)?,
+        None => cookie,
+    };
+    loop {
+        let (&tag, after_tag) = rest.split_first()?;
+        // The length is in 7-bit pieces, with the top bit meaning "more".
+        let mut len = 0usize;
+        let mut header = 0;
+        loop {
+            let &byte = after_tag.get(header)?;
+            len = (len << 7) | usize::from(byte & 0x7f);
+            header += 1;
+            if byte & 0x80 == 0 || header == 4 {
+                break;
+            }
+        }
+        let body = after_tag.get(header..)?;
+        match tag {
+            // ES descriptor: ID, flags, then optional fields.
+            0x03 => {
+                let flags = *body.get(2)?;
+                let mut skip = 3;
+                if flags & 0x80 != 0 {
+                    skip += 2;
+                }
+                if flags & 0x40 != 0 {
+                    skip += 1 + usize::from(*body.get(skip)?);
+                }
+                if flags & 0x20 != 0 {
+                    skip += 2;
+                }
+                rest = body.get(skip..)?;
+            }
+            // Decoder config: object type, stream type, buffer size, rates.
+            0x04 => rest = body.get(13..)?,
+            // Decoder specific info, which is the AudioSpecificConfig.
+            0x05 => return body.get(..len),
+            _ => return None,
+        }
+    }
+}
+
+/// The 24-byte ALACSpecificConfig in an ALAC magic cookie, which may be in
+/// `frma` and `alac` atoms.
+fn alac_specific_config(mut cookie: &[u8]) -> Option<&[u8]> {
+    for atom in [b"frma", b"alac"] {
+        if cookie.get(4..8) == Some(&atom[..]) {
+            cookie = cookie.get(12..)?;
+        }
+    }
+    cookie.get(..24)
 }
 
 /// The length, sample rate and channel count of the MPEG Layer III frame
