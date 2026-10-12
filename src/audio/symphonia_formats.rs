@@ -15,7 +15,10 @@ use symphonia::core::codecs::audio::well_known::{
     CODEC_ID_AAC, CODEC_ID_ADPCM_IMA_QT, CODEC_ID_ADPCM_IMA_WAV, CODEC_ID_ALAC, CODEC_ID_MP3,
     CODEC_ID_PCM_S16LE,
 };
+use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder};
 use symphonia::core::io::MediaSourceStream;
+use symphonia::core::packet::Packet;
+use symphonia::core::units::{Duration, Timestamp};
 
 use super::CompressedFormat;
 
@@ -129,4 +132,95 @@ pub fn decode_symphonia_to_pcm(file: Cursor<Vec<u8>>) -> Result<SymphoniaDecoded
         channels: audio_spec.channels().count().try_into().unwrap(),
         compressed_format,
     })
+}
+
+/// Decodes MP3 that an app parses itself and streams through an audio queue.
+pub struct Mp3StreamDecoder(Box<dyn AudioDecoder>);
+
+impl Mp3StreamDecoder {
+    pub fn new() -> Self {
+        let mut params = AudioCodecParameters::new();
+        params.for_codec(CODEC_ID_MP3);
+        let decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(&params, &Default::default())
+            .unwrap();
+        Mp3StreamDecoder(decoder)
+    }
+
+    /// For when the app jumps to another part of the stream.
+    pub fn reset(&mut self) {
+        self.0.reset();
+    }
+
+    /// Decodes `data` to 16-bit PCM, returning it with its sample rate and
+    /// channel count, or [None] if `data` isn't a run of whole MP3 frames.
+    pub fn decode(&mut self, data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+        // Data from files touchHLE decoded itself is already PCM.
+        let (_, sample_rate, channels) = mp3_frame_header(data)?;
+        let mut rest = data;
+        while !rest.is_empty() {
+            rest = &rest[mp3_frame_header(rest)?.0..];
+        }
+
+        let mut out_pcm = Vec::new();
+        let mut tmp_raw_s16_buf = Vec::new();
+        let mut rest = data;
+        while !rest.is_empty() {
+            let (len, _, _) = mp3_frame_header(rest).unwrap();
+            let packet = Packet::new(0, Timestamp::ZERO, Duration::ZERO, &rest[..len]);
+            rest = &rest[len..];
+            // A bad frame is skipped, as a device would.
+            if let Ok(decoded) = self.0.decode(&packet) {
+                tmp_raw_s16_buf.clear();
+                decoded.copy_bytes_to_vec_interleaved_as::<i16>(&mut tmp_raw_s16_buf);
+                out_pcm.extend_from_slice(&tmp_raw_s16_buf);
+            }
+        }
+        Some((out_pcm, sample_rate, channels))
+    }
+}
+
+/// The length, sample rate and channel count of the MPEG Layer III frame
+/// `data` starts with, if it starts with one that fits in it.
+fn mp3_frame_header(data: &[u8]) -> Option<(usize, u32, u32)> {
+    const MPEG1_KBPS: [u32; 15] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+    ];
+    const MPEG2_KBPS: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+
+    let &[b0, b1, b2, b3, ..] = data else {
+        return None;
+    };
+    // Frame sync and Layer III.
+    if b0 != 0xFF || b1 & 0xE0 != 0xE0 || (b1 >> 1) & 3 != 1 {
+        return None;
+    }
+    // 0 is MPEG-2.5, 2 is MPEG-2, 3 is MPEG-1, 1 is reserved.
+    let version = (b1 >> 3) & 3;
+    let bitrate_index = usize::from(b2 >> 4);
+    let sample_rate_index = usize::from((b2 >> 2) & 3);
+    if version == 1 || bitrate_index == 0 || bitrate_index == 15 || sample_rate_index == 3 {
+        return None;
+    }
+    let (kbps, sample_rate, coefficient) = match version {
+        3 => (
+            MPEG1_KBPS[bitrate_index],
+            [44100, 48000, 32000][sample_rate_index],
+            144,
+        ),
+        2 => (
+            MPEG2_KBPS[bitrate_index],
+            [22050, 24000, 16000][sample_rate_index],
+            72,
+        ),
+        _ => (
+            MPEG2_KBPS[bitrate_index],
+            [11025, 12000, 8000][sample_rate_index],
+            72,
+        ),
+    };
+    let padding = u32::from((b2 >> 1) & 1);
+    let len = (coefficient * kbps * 1000 / sample_rate + padding) as usize;
+    let channels = if b3 >> 6 == 3 { 1 } else { 2 };
+    (len <= data.len()).then_some((len, sample_rate, channels))
 }

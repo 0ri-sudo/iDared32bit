@@ -9,10 +9,10 @@
 //! Apple's implementation probably uses Core Audio instead.
 
 use crate::abi::{CallFromHost, GuestFunction};
-use crate::audio::decode_ima4;
 use crate::audio::openal as al;
 use crate::audio::openal::al_types::*;
 use crate::audio::openal::{OpenAL, OpenALManager};
+use crate::audio::{decode_ima4, Mp3StreamDecoder};
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::frameworks::carbon_core::OSStatus;
 use crate::frameworks::core_audio_types::{
@@ -81,6 +81,9 @@ struct AudioQueueHostObject {
     /// Whether the queue has been started and not stopped since (pausing
     /// doesn't count), for `AudioQueueGetCurrentTime()`.
     started: bool,
+    /// For MP3 the app streams itself, rather than from a file touchHLE has
+    /// already decoded.
+    mp3_decoder: Option<Mp3StreamDecoder>,
 }
 
 /// Track whether the audio queue is meant to be running, in order to handle
@@ -212,6 +215,7 @@ pub fn AudioQueueNewOutput(
         dispose_when_stopped: false,
         frames_played: 0,
         started: false,
+        mp3_decoder: None,
     };
 
     let aq_ref = env.mem.alloc_and_write(OpaqueAudioQueue { _filler: 0 });
@@ -800,12 +804,35 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) -> Result<(), 
             al_buffer
         });
 
-        let (al_format, al_frequency, data) = decode_buffer(
-            &env.mem,
-            &host_object.format,
-            next_buffer.audio_data.cast(),
-            next_buffer.audio_data_byte_size,
-        );
+        let mp3 = if host_object.format.format_id == kAudioFormatMPEGLayer3 {
+            let data = env.mem.bytes_at(
+                next_buffer.audio_data.cast(),
+                next_buffer.audio_data_byte_size,
+            );
+            let decoder = host_object
+                .mp3_decoder
+                .get_or_insert_with(Mp3StreamDecoder::new);
+            decoder.decode(data)
+        } else {
+            None
+        };
+        let (al_format, al_frequency, data) = match mp3 {
+            Some((pcm, sample_rate, channels)) => (
+                if channels == 1 {
+                    al::AL_FORMAT_MONO16
+                } else {
+                    al::AL_FORMAT_STEREO16
+                },
+                sample_rate as ALsizei,
+                pcm,
+            ),
+            None => decode_buffer(
+                &env.mem,
+                &host_object.format,
+                next_buffer.audio_data.cast(),
+                next_buffer.audio_data_byte_size,
+            ),
+        };
         unsafe {
             context.BufferData(
                 next_al_buffer,
@@ -1207,6 +1234,9 @@ fn AudioQueueReset(env: &mut Environment, in_aq: AudioQueueRef) -> OSStatus {
 
     host_object.buffer_queue.clear();
     host_object.frames_played = 0;
+    if let Some(decoder) = &mut host_object.mp3_decoder {
+        decoder.reset();
+    }
 
     0 // success
 }

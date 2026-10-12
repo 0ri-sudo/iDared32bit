@@ -16,6 +16,8 @@ mod ima4;
 pub mod openal;
 mod symphonia_formats;
 
+pub use symphonia_formats::Mp3StreamDecoder;
+
 pub use ima4::decode_ima4;
 
 use crate::fs::{Fs, GuestPath};
