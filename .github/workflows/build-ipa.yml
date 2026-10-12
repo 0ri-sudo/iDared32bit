@@ -25,52 +25,28 @@ jobs:
       - name: Patch AppPicker.swift (iOS Compatibility)
         run: |
           python3 - << 'EOF'
-          with open("iphone/touchHLE/AppPicker.swift", "r", encoding="utf-8") as f:
+          import re
+
+          path = "iphone/touchHLE/AppPicker.swift"
+          with open(path, "r", encoding="utf-8") as f:
               content = f.read()
 
-          # Remplacement du bloc expérimental iOS 26 glassEffect par le fallback standard ultraThinMaterial
-          old_glass = """        if #available(iOS 26, *) {
-              content.glassEffect(.regular.interactive(), in: Capsule())
-          } else {
-              content
-                  .background(.ultraThinMaterial, in: Capsule())
-                  .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
-          }"""
+          # Suppression du bloc expérimental iOS 26 pour BarBackground
+          p1 = r'if #available\(iOS 26, \*\) \{[\s\S]*?content\.glassEffect[\s\S]*?\} else \{([\s\S]*?)\n\s{8}\}'
+          content = re.sub(p1, r'\1', content)
 
-          new_glass = """        content
-              .background(.ultraThinMaterial, in: Capsule())
-              .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))"""
+          # Suppression du bloc expérimental iOS 26 pour Button(role: .confirm)
+          p2 = r'if #available\(iOS 26, \*\) \{[\s\S]*?Button\(role: \.confirm\)[\s\S]*?\} else \{([\s\S]*?)\n\s{20}\}'
+          content = re.sub(p2, r'\1', content)
 
-          # Remplacement du bouton expérimental Button(role: .confirm) par Button("Done")
-          old_btn = """                    // Since iOS 26, Done is a checkmark in a glass circle.
-                      if #available(iOS 26, *) {
-                          Button(role: .confirm) {
-                              model.showingQuickOptions = false
-                          }
-                      } else {
-                          Button("Done") {
-                              model.showingQuickOptions = false
-                          }
-                      }"""
+          # Validation stricte que les symboles incompatibles sont bien retirés
+          assert "glassEffect" not in content, "Erreur patch : glassEffect est toujours présent !"
+          assert "Button(role: .confirm)" not in content, "Erreur patch : Button(role: .confirm) est toujours présent !"
 
-          new_btn = """                    Button("Done") {
-                          model.showingQuickOptions = false
-                      }"""
-
-          if old_glass in content:
-              content = content.replace(old_glass, new_glass)
-              print("Patched BarBackground successfully!")
-          else:
-              print("Warning: old_glass block not found")
-
-          if old_btn in content:
-              content = content.replace(old_btn, new_btn)
-              print("Patched Toolbar Button successfully!")
-          else:
-              print("Warning: old_btn block not found")
-
-          with open("iphone/touchHLE/AppPicker.swift", "w", encoding="utf-8") as f:
+          with open(path, "w", encoding="utf-8") as f:
               f.write(content)
+
+          print("AppPicker.swift patché avec succès : compatibilité iOS 16/17/18 assurée !")
           EOF
 
       - name: Select Xcode 16
