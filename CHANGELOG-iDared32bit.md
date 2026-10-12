@@ -4,6 +4,10 @@ iDared 32bit is based on [touchHLE](https://touchhle.org/). This file lists only
 
 ## NEXT
 
+Compatibility:
+
+- Fixed a crash in some games that stream music.
+
 Usability:
 
 - After a crash, you can go back to the app picker.

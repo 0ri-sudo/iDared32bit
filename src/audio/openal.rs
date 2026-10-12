@@ -1449,6 +1449,12 @@ impl OpenAL<'_> {
                 let id = *buffers.add(i);
                 src.queue.push_back(id);
             }
+            // Like OpenAL Soft, a stopped source has processed all its
+            // buffers, including ones queued since it stopped.
+            if src.state == SourceState::Stopped {
+                src.processed = src.queue.len() as u32;
+                src.current = src.queue.len();
+            }
         });
     }
     /// # Safety
