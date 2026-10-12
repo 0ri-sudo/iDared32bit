@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
-use super::{Environment, ThreadId};
+use super::{Environment, ThreadBlock, ThreadId};
 use crate::libc::errno::{EBUSY, EDEADLK, EPERM};
 
 /// Stores and manages mutexes. Note that all the methods for locking and
@@ -197,6 +197,20 @@ impl Environment {
         self.block_on_mutex(mutex_id);
         // Lock count is always 1 after a thread-blocking lock.
         Ok(1)
+    }
+
+    /// Like [Self::unlock_mutex], but if another thread is waiting for the
+    /// mutex, lets it run so it can take the mutex, as it soon would on a
+    /// device. Otherwise this thread can relock it before the next thread
+    /// switch and starve the other one. Don't use where yielding could lose a
+    /// wakeup, as in `pthread_cond_wait`.
+    pub fn unlock_mutex_and_yield(&mut self, mutex_id: MutexId) -> Result<u32, i32> {
+        let res = self.unlock_mutex(mutex_id);
+        let mutex = &self.mutex_state.mutexes[&mutex_id];
+        if mutex.locked.is_none() && mutex.waiting_count != 0 {
+            self.yield_thread(ThreadBlock::NotBlocked);
+        }
+        res
     }
 
     /// Unlocks a mutex and returns the lock count or an error (as errno).
