@@ -10,6 +10,11 @@ jobs:
   build:
     runs-on: macos-15
 
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      CMAKE_POLICY_DEFAULT_CMP0077: "NEW"
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -50,6 +55,8 @@ jobs:
           fi
 
           echo "CARGO_TARGET_AARCH64_APPLE_IOS_RUSTFLAGS=$RUST_LINK_FLAGS" >> $GITHUB_ENV
+          echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> $GITHUB_ENV
+          echo "CMAKE_POLICY_DEFAULT_CMP0077=NEW" >> $GITHUB_ENV
 
       - name: Precompile Rust Library
         run: |
@@ -59,7 +66,6 @@ jobs:
       - name: Build iOS App with Xcode
         run: |
           set -o pipefail
-          # Désactivation du code signing automatique imposé par Xcode (pour autoriser l'absence de compte développeur)
           xcodebuild build \
             -project iphone/touchHLE.xcodeproj \
             -scheme "iDared 32bit" \
